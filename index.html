@@ -2,196 +2,803 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>外部マイク入力テスト v3</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111111">
+<title>漏水音スペクトラム解析</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
 <style>
-  :root { --bg:#111; --fg:#eee; --sub:#9aa; --ok:#4c8; --ng:#e55; --acc:#3af; }
-  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; font-size:15px; }
-  h1 { font-size:18px; margin:0 0 12px; }
-  h2 { font-size:14px; color:var(--sub); margin:14px 0 4px; font-weight:normal; }
-  button, select { font-size:16px; padding:10px 14px; margin:4px 0; width:100%; border-radius:8px; border:1px solid #444; background:#222; color:var(--fg); }
-  button.primary { background:var(--acc); color:#000; border:none; font-weight:bold; }
-  .row { display:flex; gap:8px; } .row > * { flex:1; }
-  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:13px; }
-  td { padding:4px 6px; border-bottom:1px solid #333; vertical-align:top; word-break:break-all; }
-  td:first-child { color:var(--sub); width:42%; }
-  .ok { color:var(--ok); } .ng { color:var(--ng); }
-  canvas { width:100%; display:block; background:#000; border-radius:6px; }
-  #spec { height:200px; } #hist { height:120px; }
-  #big { font-size:32px; font-weight:bold; text-align:center; margin:8px 0 0; font-variant-numeric:tabular-nums; }
-  #bands { font-size:13px; text-align:center; color:var(--sub); font-variant-numeric:tabular-nums; }
-  #log { font-size:12px; color:var(--sub); white-space:pre-wrap; margin-top:8px; }
+  :root {
+    --bg:#111; --panel:#1b1b1b; --line:#333; --fg:#eee; --sub:#9aa; --acc:#3af;
+    --ok:#4c8; --warn:#fb3; --ng:#f55; --rec:#e33;
+  }
+  * { box-sizing:border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
+    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; font-size:14px; overscroll-behavior:none; }
+  body { display:flex; flex-direction:column; height:100dvh; padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
+
+  header { display:flex; gap:4px; padding:6px; background:var(--panel); border-bottom:1px solid var(--line); }
+  header button { flex:1; min-width:0; padding:8px 2px; font-size:13px; line-height:1.1; border-radius:6px;
+    border:1px solid #444; background:#262626; color:var(--fg); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  header button.on { background:var(--acc); color:#000; border-color:var(--acc); font-weight:bold; }
+  header button#btnRec { color:#fff; background:#5a1d1d; border-color:#7a2a2a; }
+  header button#btnRec.on { background:var(--rec); border-color:var(--rec); }
+  header button:disabled { opacity:.4; }
+
+  .pane { position:relative; min-height:0; }
+  #top { flex:0 0 40%; border-bottom:2px solid var(--line); }
+  #bottom { flex:1 1 auto; }
+  .pane canvas { position:absolute; inset:0; width:100%; height:100%; display:block; touch-action:none; }
+  .tag { position:absolute; top:4px; right:6px; font-size:11px; color:var(--sub); pointer-events:none;
+    background:rgba(0,0,0,.5); padding:1px 5px; border-radius:4px; }
+  #legend { position:absolute; top:4px; left:6px; font-size:11px; pointer-events:none; background:rgba(0,0,0,.5); padding:1px 5px; border-radius:4px; }
+  #legend span { margin-right:8px; }
+
+  footer { padding:5px 8px; background:var(--panel); border-top:1px solid var(--line); font-size:12px;
+    font-variant-numeric:tabular-nums; display:grid; grid-template-columns:1fr 1fr 1fr; gap:2px 8px; }
+  footer .k { color:var(--sub); font-size:10px; display:block; }
+  footer .v { font-size:15px; font-weight:bold; }
+  footer #stDev { grid-column:1 / -1; color:var(--sub); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .clip { color:var(--ng) !important; }
+
+  #startOverlay { position:fixed; inset:0; background:rgba(0,0,0,.85); display:flex; flex-direction:column;
+    align-items:center; justify-content:center; gap:14px; z-index:10; padding:24px; text-align:center; }
+  #startOverlay button { font-size:20px; padding:16px 32px; border-radius:12px; border:none; background:var(--acc); color:#000; font-weight:bold; }
+  #startOverlay p { color:var(--sub); margin:0; line-height:1.6; max-width:420px; }
+  #err { color:var(--ng); white-space:pre-wrap; }
+
+  #recBar { position:fixed; left:0; right:0; top:0; height:4px; background:transparent; z-index:5; }
+  #recBar div { height:100%; width:0; background:var(--rec); }
+  #recMsg { position:absolute; left:50%; top:8px; transform:translateX(-50%); background:var(--rec); color:#fff;
+    padding:4px 12px; border-radius:12px; font-weight:bold; display:none; z-index:4; }
+
+  dialog { background:var(--panel); color:var(--fg); border:1px solid #444; border-radius:12px; padding:16px;
+    width:min(94vw,520px); max-height:90dvh; overflow:auto; }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+  dialog h3 { margin:0 0 10px; font-size:16px; }
+  dialog label { display:block; margin:8px 0 2px; color:var(--sub); font-size:12px; }
+  dialog input[type=text], dialog input[type=number], dialog select, dialog textarea {
+    width:100%; font-size:16px; padding:8px; border-radius:6px; border:1px solid #444; background:#111; color:var(--fg); }
+  dialog textarea { height:60px; }
+  dialog .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:0 10px; }
+  dialog .chk { display:flex; gap:14px; flex-wrap:wrap; margin-top:6px; }
+  dialog .chk label { display:flex; align-items:center; gap:4px; margin:0; color:var(--fg); font-size:14px; }
+  dialog .btns { display:flex; gap:8px; margin-top:14px; }
+  dialog .btns button { flex:1; font-size:16px; padding:10px; border-radius:8px; border:1px solid #444; background:#262626; color:var(--fg); }
+  dialog .btns button.primary { background:var(--acc); color:#000; border:none; font-weight:bold; }
+  dialog .note { font-size:11px; color:var(--sub); margin-top:6px; line-height:1.5; }
+  dialog fieldset { border:1px solid var(--line); border-radius:8px; margin:10px 0 0; padding:4px 10px 10px; }
+  dialog legend { color:var(--acc); font-size:12px; padding:0 4px; }
+  #saveSummary { font-size:12px; color:var(--sub); line-height:1.6; font-variant-numeric:tabular-nums; }
+  a { color:var(--acc); }
 </style>
 </head>
 <body>
-<h1>外部マイク入力テスト v3</h1>
 
-<button class="primary" id="start">① マイク開始</button>
-<select id="dev" disabled><option>（開始後にデバイス一覧を表示）</option></select>
-<div class="row">
-  <button id="stop" disabled>停止</button>
+<header>
+  <button id="btnRun">■ 停止</button>
+  <button id="btnHold">⏸ 静止</button>
+  <button id="btnRec">● 録音</button>
+  <button id="btnSnap">CSV</button>
+  <button id="btnBg">背景</button>
+  <button id="btnReset">リセット</button>
+  <button id="btnSet">⚙</button>
+</header>
+
+<div id="recBar"><div></div></div>
+
+<section class="pane" id="top">
+  <canvas id="cvSpec"></canvas>
+  <div id="legend"><span style="color:#3cf">― 現在</span><span style="color:#fd3">― 平均</span><span style="color:#f55">― ピーク</span><span style="color:#aaa">― 背景</span></div>
+  <div class="tag" id="tagTop">スペクトル</div>
+  <div id="recMsg"></div>
+</section>
+<section class="pane" id="bottom">
+  <canvas id="cvWf"></canvas>
+  <div class="tag">スペクトログラム（上が最新）</div>
+</section>
+
+<footer>
+  <div><span class="k">全体 RMS / ピーク</span><span class="v" id="stLvl">--</span></div>
+  <div><span class="k" id="stBandK">漏水帯域</span><span class="v" id="stBand">--</span></div>
+  <div><span class="k">背景との差</span><span class="v" id="stDiff">--</span></div>
+  <div id="stDev">未接続</div>
+</footer>
+
+<div id="startOverlay">
+  <div style="font-size:20px;font-weight:bold">漏水音スペクトラム解析</div>
+  <p>コンクリートマイクをUSB-Cアダプタ経由で接続してから開始してください。</p>
+  <button id="btnStart">▶ 測定開始</button>
+  <p style="font-size:12px">Android Chromeでは「エコーキャンセル」をONにしないと外部マイクに切り替わらない場合があります（初期値ON）。<br>
+  外部マイクの確認：測定中にアダプタを抜いて波形が変わるかを見てください。</p>
+  <div id="err"></div>
 </div>
-<div class="row" style="font-size:14px;margin:6px 0">
-  <label><input type="checkbox" id="ec"> エコーキャンセル</label>
-  <label><input type="checkbox" id="ns"> ノイズ抑制</label>
-  <label><input type="checkbox" id="agc"> 自動音量</label>
-</div>
 
-<div id="big">-- dBFS</div>
-<div id="bands">低域 20-200Hz: -- / 中域 200-2kHz: -- / 高域 2k-8kHz: --</div>
+<!-- 保存ダイアログ -->
+<dialog id="dlgSave">
+  <h3 id="saveTitle">録音完了</h3>
+  <div id="saveSummary"></div>
+  <label>地点ID（弁番号・栓番など）</label>
+  <input type="text" id="inSite" autocomplete="off">
+  <label>メモ</label>
+  <textarea id="inMemo"></textarea>
+  <div class="note" id="saveGps"></div>
+  <div class="btns">
+    <button id="btnDiscard">破棄</button>
+    <button id="btnShare">共有</button>
+    <button id="btnSave" class="primary">保存</button>
+  </div>
+  <div class="note">保存：端末の「ダウンロード」に WAV と CSV を保存します。共有：Drive・Slack などへ直接送ります。</div>
+</dialog>
 
-<h2>レベル履歴（直近10秒）— マイクのON/OFFや叩いたときの変化を見る</h2>
-<canvas id="hist"></canvas>
-
-<h2>スペクトル（対数軸 20Hz〜20kHz、-140〜0 dBFS）</h2>
-<canvas id="spec"></canvas>
-
-<table id="info"></table>
-<table id="env"></table>
-<div id="log"></div>
+<!-- 設定ダイアログ -->
+<dialog id="dlgSet">
+  <h3>設定</h3>
+  <fieldset><legend>入力</legend>
+    <label>入力デバイス</label>
+    <select id="sDev"></select>
+    <div class="chk">
+      <label><input type="checkbox" id="sEc">エコーキャンセル</label>
+      <label><input type="checkbox" id="sNs">ノイズ抑制</label>
+      <label><input type="checkbox" id="sAgc">自動音量</label>
+    </div>
+    <div class="note">Pixel + Chrome では、エコーキャンセルOFFだと内蔵マイクになることを確認済みです。ノイズ抑制・自動音量は漏水音を消すためOFF推奨。</div>
+  </fieldset>
+  <fieldset><legend>解析</legend>
+    <div class="grid2">
+      <div><label>FFTサイズ</label><select id="sFft">
+        <option>1024</option><option>2048</option><option>4096</option><option>8192</option><option>16384</option></select></div>
+      <div><label>窓関数</label><select id="sWin">
+        <option value="hann">Hann</option><option value="hamming">Hamming</option><option value="blackman">Blackman</option><option value="rect">矩形</option></select></div>
+      <div><label>現在値の平滑化 (0〜0.95)</label><input type="number" id="sSmooth" step="0.05" min="0" max="0.95"></div>
+      <div><label>周波数軸</label><select id="sLog"><option value="1">対数</option><option value="0">線形</option></select></div>
+      <div><label>漏水帯域 下限 Hz</label><input type="number" id="sBandLo"></div>
+      <div><label>漏水帯域 上限 Hz</label><input type="number" id="sBandHi"></div>
+    </div>
+    <div class="note" id="sRes"></div>
+  </fieldset>
+  <fieldset><legend>表示</legend>
+    <div class="grid2">
+      <div><label>表示 最小周波数 Hz</label><input type="number" id="sFMin"></div>
+      <div><label>表示 最大周波数 Hz</label><input type="number" id="sFMax"></div>
+      <div><label>上画面 dB 下限</label><input type="number" id="sDbMin"></div>
+      <div><label>上画面 dB 上限</label><input type="number" id="sDbMax"></div>
+      <div><label>下画面 色 下限 dB</label><input type="number" id="sCMin"></div>
+      <div><label>下画面 色 上限 dB</label><input type="number" id="sCMax"></div>
+    </div>
+  </fieldset>
+  <fieldset><legend>録音・保存</legend>
+    <div class="grid2">
+      <div><label>録音秒数</label><input type="number" id="sRecSec" min="1" max="60"></div>
+      <div><label>CSV 最大周波数 Hz</label><input type="number" id="sCsvMax"></div>
+    </div>
+    <div class="chk"><label><input type="checkbox" id="sGps">位置情報(GPS)を記録</label></div>
+  </fieldset>
+  <div class="btns">
+    <button id="btnSetCancel">キャンセル</button>
+    <button id="btnSetOk" class="primary">適用</button>
+  </div>
+  <div class="note"><a href="test.html">入力テストページ</a> ／ v1.0</div>
+</dialog>
 
 <script>
+'use strict';
+const APP_VER = '1.0';
 const $ = id => document.getElementById(id);
-const log = m => { $('log').textContent = new Date().toLocaleTimeString() + ' ' + m + '\n' + $('log').textContent; };
-const row = (t, k, v, cls='') => { t.insertAdjacentHTML('beforeend', `<tr><td>${k}</td><td class="${cls}">${v}</td></tr>`); };
 
-const env = $('env');
-row(env, 'URLスキーム', location.protocol);
-row(env, 'セキュアコンテキスト', window.isSecureContext ? 'OK' : 'NG', window.isSecureContext ? 'ok' : 'ng');
-row(env, 'UserAgent', navigator.userAgent);
+// ---------------- 設定 ----------------
+const DEFAULTS = {
+  deviceId:'', ec:true, ns:false, agc:false,
+  fft:8192, win:'hann', smooth:0.6, logx:true, bandLo:100, bandHi:2000,
+  fMin:20, fMax:5000, dbMin:-140, dbMax:-20, cMin:-120, cMax:-50,
+  recSec:5, csvMax:8000, gps:false, siteId:''
+};
+let S = { ...DEFAULTS };
+try { Object.assign(S, JSON.parse(localStorage.getItem('leakAudioSettings') || '{}')); } catch (e) {}
+const saveS = () => { try { localStorage.setItem('leakAudioSettings', JSON.stringify(S)); } catch (e) {} };
 
-let ctx, stream, raf, curDev = '';
-const hist = []; // [time, dB]
+// ---------------- 状態 ----------------
+let ctx = null, stream = null, srcNode = null, tapNode = null, sinkNode = null;
+let running = false, hold = false, wakeLock = null;
+let sr = 48000, N = 8192, hop = 2048, nBins = 4096, binHz = 48000 / 8192;
+let ring, ringLen = 65536, writePos = 0, sinceFrame = 0, totalSamples = 0;
+let win, winSum, enbw, fft, re, im, tmp;
+let pow, curPow, avgSum, avgN = 0, peakPow, bgDb = null;
+let lastRms = -200, lastPeak = -200, curBandDb = -200;
+const pendingRows = [];
+let trackInfo = { label:'', ec:null, ns:null, agc:null };
 
-async function open(deviceId) {
-  stop();
-  const audio = {
-    echoCancellation: $('ec').checked, noiseSuppression: $('ns').checked, autoGainControl: $('agc').checked
+// 録音
+let rec = null; // {chunks, samples, target, frames, avgSum, avgN, peak, startDate, gps}
+let lastResult = null; // 保存待ち
+
+// ---------------- FFT ----------------
+function makeFFT(n) {
+  const rev = new Uint32Array(n), bits = Math.log2(n);
+  for (let i = 0; i < n; i++) { let r = 0; for (let b = 0; b < bits; b++) r |= ((i >> b) & 1) << (bits - 1 - b); rev[i] = r; }
+  const cs = new Float64Array(n / 2), sn = new Float64Array(n / 2);
+  for (let k = 0; k < n / 2; k++) { cs[k] = Math.cos(2 * Math.PI * k / n); sn[k] = Math.sin(2 * Math.PI * k / n); }
+  return (xr, xi) => {
+    for (let i = 0; i < n; i++) { const j = rev[i]; if (j > i) { let t = xr[i]; xr[i] = xr[j]; xr[j] = t; t = xi[i]; xi[i] = xi[j]; xi[j] = t; } }
+    for (let size = 2; size <= n; size <<= 1) {
+      const half = size >> 1, step = n / size;
+      for (let i = 0; i < n; i += size) {
+        for (let j = 0, k = 0; j < half; j++, k += step) {
+          const a = i + j, l = a + half;
+          const tr = xr[l] * cs[k] + xi[l] * sn[k], ti = xi[l] * cs[k] - xr[l] * sn[k];
+          xr[l] = xr[a] - tr; xi[l] = xi[a] - ti; xr[a] += tr; xi[a] += ti;
+        }
+      }
+    }
   };
-  const modeTxt = `EC:${audio.echoCancellation ? 'ON' : 'OFF'} NS:${audio.noiseSuppression ? 'ON' : 'OFF'} AGC:${audio.autoGainControl ? 'ON' : 'OFF'}`;
-  if (deviceId) audio.deviceId = { exact: deviceId };
-  stream = await navigator.mediaDevices.getUserMedia({ audio });
-  ctx = new AudioContext();
-  const src = ctx.createMediaStreamSource(stream);
-  const an = ctx.createAnalyser();
-  an.fftSize = 8192; an.smoothingTimeConstant = 0.5;
-  an.minDecibels = -140; an.maxDecibels = 0;
-  src.connect(an);
+}
 
-  const tr = stream.getAudioTracks()[0];
-  const s = tr.getSettings();
-  curDev = s.deviceId;
-  const info = $('info'); info.innerHTML = '';
-  row(info, '使用中デバイス', tr.label || '(ラベルなし)');
-  row(info, 'サンプリング周波数', ctx.sampleRate + ' Hz');
-  for (const k of ['echoCancellation', 'noiseSuppression', 'autoGainControl']) {
-    const v = s[k];
-    row(info, k, v === undefined ? '不明' : (v ? 'ON' : 'OFF'), v ? 'ng' : 'ok');
+function makeWindow(type, n) {
+  const w = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const x = 2 * Math.PI * i / (n - 1);
+    w[i] = type === 'hamming' ? 0.54 - 0.46 * Math.cos(x)
+         : type === 'blackman' ? 0.42 - 0.5 * Math.cos(x) + 0.08 * Math.cos(2 * x)
+         : type === 'rect' ? 1 : 0.5 - 0.5 * Math.cos(x);
   }
-  log(`開始: ${tr.label} / ${modeTxt}`);
-  tr.onended = () => log('トラックが終了しました（デバイス切断？）');
-  tr.onmute = () => log('トラックがミュートされました');
-
-  await listDevices(curDev);
-  $('stop').disabled = false;
-  draw(an);
+  return w;
 }
 
-async function listDevices(current) {
-  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
-  const sel = $('dev'); sel.innerHTML = '';
-  devs.forEach((d, i) => {
-    const o = document.createElement('option');
-    o.value = d.deviceId; o.textContent = d.label || `入力 ${i + 1}`;
-    if (d.deviceId === current) o.selected = true;
-    sel.appendChild(o);
-  });
-  sel.disabled = false;
+function initAnalysis() {
+  N = S.fft; hop = Math.min(2048, N / 2); nBins = N / 2; binHz = sr / N;
+  ringLen = Math.max(65536, N * 2); ring = new Float32Array(ringLen); writePos = 0; sinceFrame = 0;
+  win = makeWindow(S.win, N);
+  winSum = 0; let w2 = 0; for (const v of win) { winSum += v; w2 += v * v; }
+  enbw = N * w2 / (winSum * winSum);
+  fft = makeFFT(N); re = new Float64Array(N); im = new Float64Array(N);
+  pow = new Float64Array(nBins); curPow = new Float64Array(nBins);
+  resetStats();
+  if (bgDb && bgDb.length !== nBins) bgDb = null;
+  pendingRows.length = 0;
+  buildMaps(); clearWaterfall();
 }
 
-function bandDb(freq, binHz, f1, f2) {
-  // 帯域内パワー合計（dBFS相当）
-  let p = 0;
-  for (let i = Math.max(1, Math.floor(f1 / binHz)); i <= Math.min(freq.length - 1, Math.ceil(f2 / binHz)); i++) p += Math.pow(10, freq[i] / 10);
-  return 10 * Math.log10(p + 1e-20);
+function resetStats() {
+  avgSum = new Float64Array(nBins); avgN = 0; peakPow = new Float64Array(nBins); curPow.fill(0);
 }
 
-function draw(an) {
-  const sc = $('spec'), sg = sc.getContext('2d');
-  const hc = $('hist'), hg = hc.getContext('2d');
-  const freq = new Float32Array(an.frequencyBinCount);
-  const time = new Float32Array(an.fftSize);
-  const nyq = ctx.sampleRate / 2, binHz = nyq / freq.length;
-  const fMin = 20, fMax = Math.min(20000, nyq);
-  const lx = f => Math.log(f / fMin) / Math.log(fMax / fMin);
-  const dpr = devicePixelRatio;
-  hist.length = 0;
+const toDb = p => 10 * Math.log10(p + 1e-20);
 
-  const loop = () => {
-    for (const c of [sc, hc]) { c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr; }
-    an.getFloatFrequencyData(freq);
-    an.getFloatTimeDomainData(time);
+function bandPowDb(p, f1, f2) {
+  let s = 0;
+  const k1 = Math.max(1, Math.round(f1 / binHz)), k2 = Math.min(nBins - 1, Math.round(f2 / binHz));
+  for (let k = k1; k <= k2; k++) s += p[k];
+  return toDb(s / enbw);
+}
 
-    let sum = 0, pk = 0;
-    for (const x of time) { sum += x * x; pk = Math.max(pk, Math.abs(x)); }
-    const db = 10 * Math.log10(sum / time.length + 1e-20);
-    const pkDb = 20 * Math.log10(pk + 1e-10);
-    $('big').textContent = `${db.toFixed(1)} dBFS（ピーク ${pkDb.toFixed(1)}）`;
-    $('big').style.color = pkDb > -1 ? 'var(--ng)' : 'var(--fg)';
-    $('bands').textContent =
-      `低域 20-200Hz: ${bandDb(freq, binHz, 20, 200).toFixed(1)} / 中域 200-2kHz: ${bandDb(freq, binHz, 200, 2000).toFixed(1)} / 高域 2k-8kHz: ${bandDb(freq, binHz, 2000, 8000).toFixed(1)}`;
+// 1ホップごとのフレーム解析
+function computeFrame() {
+  let start = (writePos - N + ringLen) % ringLen;
+  for (let i = 0; i < N; i++) { re[i] = ring[(start + i) % ringLen] * win[i]; im[i] = 0; }
+  fft(re, im);
+  const norm = (2 / winSum) ** 2, a = S.smooth;
+  for (let k = 0; k < nBins; k++) {
+    const p = (re[k] * re[k] + im[k] * im[k]) * norm;
+    pow[k] = p;
+    curPow[k] = a * curPow[k] + (1 - a) * p;
+    avgSum[k] += p;
+    if (p > peakPow[k]) peakPow[k] = p;
+  }
+  avgN++;
+  // 全体レベル（直近ホップの時間波形）
+  let ss = 0, pk = 0; start = (writePos - hop + ringLen) % ringLen;
+  for (let i = 0; i < hop; i++) { const x = ring[(start + i) % ringLen]; ss += x * x; if (Math.abs(x) > pk) pk = Math.abs(x); }
+  lastRms = toDb(ss / hop); lastPeak = 20 * Math.log10(pk + 1e-10);
+  curBandDb = bandPowDb(curPow, S.bandLo, S.bandHi);
 
-    // レベル履歴
-    const now = performance.now();
-    hist.push([now, db]);
-    while (hist.length && now - hist[0][0] > 10000) hist.shift();
-    const W = hc.width, H = hc.height, dMin = -120, dMax = 0;
-    hg.fillStyle = '#000'; hg.fillRect(0, 0, W, H);
-    hg.strokeStyle = '#333'; hg.fillStyle = '#9aa'; hg.font = `${10 * dpr}px sans-serif`;
-    for (let d = -100; d < 0; d += 20) { const y = (d - dMax) / (dMin - dMax) * H; hg.beginPath(); hg.moveTo(0, y); hg.lineTo(W, y); hg.stroke(); hg.fillText(d, 2, y - 2); }
-    hg.strokeStyle = '#4c8'; hg.lineWidth = 1.5 * dpr; hg.beginPath();
-    hist.forEach(([t, d], i) => { const x = W - (now - t) / 10000 * W, y = (d - dMax) / (dMin - dMax) * H; i ? hg.lineTo(x, y) : hg.moveTo(x, y); });
-    hg.stroke();
+  const db = new Float32Array(nBins);
+  for (let k = 0; k < nBins; k++) db[k] = toDb(pow[k]);
+  if (!hold) { pendingRows.push(db); if (pendingRows.length > 200) pendingRows.shift(); }
 
-    // スペクトル（対数軸）
-    const SW = sc.width, SH = sc.height;
-    sg.fillStyle = '#000'; sg.fillRect(0, 0, SW, SH);
-    sg.strokeStyle = '#333'; sg.fillStyle = '#9aa'; sg.font = `${10 * dpr}px sans-serif`;
-    for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]) {
-      if (f > fMax) continue;
-      const x = lx(f) * SW; sg.beginPath(); sg.moveTo(x, 0); sg.lineTo(x, SH); sg.stroke();
-      sg.fillText(f >= 1000 ? f / 1000 + 'k' : f, x + 2, SH - 4);
-    }
-    sg.strokeStyle = '#3af'; sg.beginPath();
-    let first = true;
-    for (let i = 1; i < freq.length; i++) {
-      const f = i * binHz; if (f < fMin || f > fMax) continue;
-      const x = lx(f) * SW, y = (-freq[i] / 140) * SH;
-      first ? sg.moveTo(x, y) : sg.lineTo(x, y); first = false;
-    }
-    sg.stroke();
+  if (rec) {
+    const kMax = Math.min(nBins - 1, Math.floor(S.csvMax / binHz));
+    rec.frames.push({ t: rec.samples / sr, db: db.slice(0, kMax + 1) });
+    for (let k = 0; k < nBins; k++) { rec.avgSum[k] += pow[k]; if (pow[k] > rec.peak[k]) rec.peak[k] = pow[k]; }
+    rec.avgN++;
+  }
+}
 
-    raf = requestAnimationFrame(loop);
+function onChunk(buf) {
+  for (let i = 0; i < buf.length; i++) { ring[writePos] = buf[i]; writePos = (writePos + 1) % ringLen; }
+  totalSamples += buf.length;
+  if (rec) {
+    rec.chunks.push(buf); rec.samples += buf.length;
+    if (rec.samples >= rec.target) finishRec();
+  }
+  sinceFrame += buf.length;
+  while (sinceFrame >= hop) { sinceFrame -= hop; if (totalSamples >= N) computeFrame(); }
+}
+
+// ---------------- 音声入力 ----------------
+const WORKLET = `
+class Tap extends AudioWorkletProcessor {
+  constructor() { super(); this.b = new Float32Array(1024); this.n = 0; }
+  process(inputs) {
+    const ch = inputs[0] && inputs[0][0];
+    if (ch) for (let i = 0; i < ch.length; i++) { this.b[this.n++] = ch[i]; if (this.n === 1024) { this.port.postMessage(this.b.slice(0)); this.n = 0; } }
+    return true;
+  }
+}
+registerProcessor('tap', Tap);`;
+
+async function startAudio() {
+  await stopAudio();
+  const audio = { echoCancellation: S.ec, noiseSuppression: S.ns, autoGainControl: S.agc, channelCount: 1 };
+  if (S.deviceId) audio.deviceId = { exact: S.deviceId };
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio });
+  } catch (e) {
+    if (e.name === 'OverconstrainedError' && S.deviceId) { S.deviceId = ''; saveS(); return startAudio(); }
+    throw e;
+  }
+  ctx = new AudioContext({ latencyHint: 'interactive' });
+  await ctx.resume();
+  sr = ctx.sampleRate;
+  srcNode = ctx.createMediaStreamSource(stream);
+  sinkNode = ctx.createGain(); sinkNode.gain.value = 0; sinkNode.connect(ctx.destination);
+  initAnalysis();
+  if (ctx.audioWorklet) {
+    const url = URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' }));
+    await ctx.audioWorklet.addModule(url);
+    tapNode = new AudioWorkletNode(ctx, 'tap', { numberOfInputs: 1, numberOfOutputs: 1, channelCount: 1 });
+    tapNode.port.onmessage = e => onChunk(e.data);
+  } else {
+    tapNode = ctx.createScriptProcessor(2048, 1, 1);
+    tapNode.onaudioprocess = e => onChunk(new Float32Array(e.inputBuffer.getChannelData(0)));
+  }
+  srcNode.connect(tapNode); tapNode.connect(sinkNode);
+
+  const tr = stream.getAudioTracks()[0], st = tr.getSettings();
+  trackInfo = { label: tr.label, ec: st.echoCancellation, ns: st.noiseSuppression, agc: st.autoGainControl };
+  tr.onended = () => { $('stDev').textContent = '⚠ 入力が切断されました'; $('stDev').classList.add('clip'); };
+  updateDevLine();
+  running = true; $('btnRun').textContent = '■ 停止'; $('btnRun').classList.remove('on');
+  requestWake();
+}
+
+async function stopAudio() {
+  running = false;
+  if (rec) { rec = null; showRecUi(false); }
+  try { stream && stream.getTracks().forEach(t => t.stop()); } catch (e) {}
+  try { ctx && await ctx.close(); } catch (e) {}
+  ctx = stream = srcNode = tapNode = sinkNode = null;
+  releaseWake();
+}
+
+function updateDevLine() {
+  const f = v => v === undefined ? '?' : (v ? 'ON' : 'OFF');
+  $('stDev').classList.remove('clip');
+  $('stDev').textContent = `${trackInfo.label || '入力'} ｜ ${sr} Hz ｜ FFT ${N}（${binHz.toFixed(2)} Hz）｜ EC:${f(trackInfo.ec)} NS:${f(trackInfo.ns)} AGC:${f(trackInfo.agc)}`;
+}
+
+async function requestWake() {
+  try { if ('wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+}
+function releaseWake() { try { wakeLock && wakeLock.release(); } catch (e) {} wakeLock = null; }
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible' && running) requestWake(); });
+
+// ---------------- 描画 ----------------
+const cvSpec = $('cvSpec'), cvWf = $('cvWf');
+const gSpec = cvSpec.getContext('2d'), gWf = cvWf.getContext('2d');
+const wfBuf = document.createElement('canvas'), gBuf = wfBuf.getContext('2d');
+let dpr = 1, mapB0 = null, mapB1 = null, cursorX = null;
+
+// SpectralPro風カラーマップ（黒→紺→青→シアン→緑→黄→赤→白）
+const LUT = (() => {
+  const stops = [[0,0,0,0],[.15,0,0,90],[.32,0,40,220],[.47,0,190,230],[.62,0,220,60],[.77,240,240,0],[.9,255,60,0],[1,255,255,255]];
+  const lut = new Uint8ClampedArray(256 * 3);
+  for (let i = 0; i < 256; i++) {
+    const t = i / 255; let j = 0; while (j < stops.length - 2 && t > stops[j + 1][0]) j++;
+    const [t0, r0, g0, b0] = stops[j], [t1, r1, g1, b1] = stops[j + 1], u = (t - t0) / (t1 - t0);
+    lut[i * 3] = r0 + (r1 - r0) * u; lut[i * 3 + 1] = g0 + (g1 - g0) * u; lut[i * 3 + 2] = b0 + (b1 - b0) * u;
+  }
+  return lut;
+})();
+
+const fRange = () => [Math.max(S.logx ? 10 : 0, S.fMin), Math.min(S.fMax, sr / 2)];
+function fToX(f, W) {
+  const [a, b] = fRange();
+  return S.logx ? Math.log(f / a) / Math.log(b / a) * W : (f - a) / (b - a) * W;
+}
+function xToF(x, W) {
+  const [a, b] = fRange();
+  return S.logx ? a * Math.pow(b / a, x / W) : a + (b - a) * x / W;
+}
+
+function resize() {
+  dpr = window.devicePixelRatio || 1;
+  for (const c of [cvSpec, cvWf]) { c.width = Math.round(c.clientWidth * dpr); c.height = Math.round(c.clientHeight * dpr); }
+  const old = document.createElement('canvas'); old.width = wfBuf.width; old.height = wfBuf.height;
+  if (wfBuf.width) old.getContext('2d').drawImage(wfBuf, 0, 0);
+  wfBuf.width = cvWf.width; wfBuf.height = cvWf.height;
+  gBuf.fillStyle = '#000'; gBuf.fillRect(0, 0, wfBuf.width, wfBuf.height);
+  if (old.width) gBuf.drawImage(old, 0, 0, old.width, old.height, 0, 0, wfBuf.width, wfBuf.height);
+  buildMaps();
+}
+
+function buildMaps() {
+  const W = cvSpec.width; if (!W || !nBins) return;
+  mapB0 = new Int32Array(W); mapB1 = new Int32Array(W);
+  for (let x = 0; x < W; x++) {
+    const b0 = Math.max(1, Math.min(nBins - 1, Math.round(xToF(x, W) / binHz)));
+    const b1 = Math.max(b0, Math.min(nBins - 1, Math.round(xToF(x + 1, W) / binHz) - 1));
+    mapB0[x] = b0; mapB1[x] = b1;
+  }
+}
+
+function clearWaterfall() { gBuf.fillStyle = '#000'; gBuf.fillRect(0, 0, wfBuf.width, wfBuf.height); }
+
+function colMax(arr, x, isPow) {
+  let m = -Infinity;
+  for (let k = mapB0[x]; k <= mapB1[x]; k++) if (arr[k] > m) m = arr[k];
+  return isPow ? toDb(m) : m;
+}
+
+function freqTicks() {
+  const [a, b] = fRange(), out = [];
+  if (S.logx) {
+    for (let d = 1; d <= 100000; d *= 10) for (const m of [1, 2, 5]) { const f = d * m; if (f >= a && f <= b) out.push(f); }
+  } else {
+    const raw = (b - a) / 6, p = Math.pow(10, Math.floor(Math.log10(raw)));
+    const step = [1, 2, 5, 10].map(m => m * p).find(s => s >= raw);
+    for (let f = Math.ceil(a / step) * step; f <= b; f += step) out.push(f);
+  }
+  return out;
+}
+const fLabel = f => f >= 1000 ? (f / 1000) + 'k' : String(Math.round(f));
+
+function drawSpectrum() {
+  const W = cvSpec.width, H = cvSpec.height, g = gSpec;
+  if (!W || !mapB0) return;
+  const yOf = d => (S.dbMax - d) / (S.dbMax - S.dbMin) * H;
+  g.fillStyle = '#000'; g.fillRect(0, 0, W, H);
+  // 漏水帯域
+  const xb1 = fToX(Math.max(S.bandLo, fRange()[0]), W), xb2 = fToX(Math.min(S.bandHi, fRange()[1]), W);
+  g.fillStyle = 'rgba(51,170,255,0.10)'; g.fillRect(xb1, 0, xb2 - xb1, H);
+  // グリッド
+  g.font = `${10 * dpr}px sans-serif`; g.lineWidth = 1; g.strokeStyle = '#2a2a2a'; g.fillStyle = '#889';
+  for (let d = Math.ceil(S.dbMin / 10) * 10; d <= S.dbMax; d += 10) {
+    const y = yOf(d); g.beginPath(); g.moveTo(0, y); g.lineTo(W, y); g.stroke();
+    if (d % 20 === 0) g.fillText(d, 2 * dpr, y - 2 * dpr);
+  }
+  for (const f of freqTicks()) {
+    const x = fToX(f, W); g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke();
+    g.fillText(fLabel(f), x + 2 * dpr, H - 3 * dpr);
+  }
+  const line = (src, isPow, color, lw, fill) => {
+    g.beginPath();
+    for (let x = 0; x < W; x++) { const y = yOf(colMax(src, x, isPow)); x ? g.lineTo(x, y) : g.moveTo(x, y); }
+    if (fill) { g.lineTo(W, H); g.lineTo(0, H); g.closePath(); g.fillStyle = fill; g.fill(); }
+    else { g.strokeStyle = color; g.lineWidth = lw * dpr; g.stroke(); }
   };
-  loop();
+  if (bgDb) line(bgDb, false, '#aaa', 1);
+  if (avgN) {
+    const avg = new Float64Array(nBins); for (let k = 0; k < nBins; k++) avg[k] = avgSum[k] / avgN;
+    line(peakPow, true, '#f55', 0.8);
+    line(avg, true, '#fd3', 1.2);
+  }
+  line(curPow, true, null, 0, 'rgba(51,200,255,0.18)');
+  line(curPow, true, '#3cf', 1.5);
+  // カーソル
+  if (cursorX !== null) {
+    const x = cursorX * dpr, f = xToF(x, W), xi = Math.max(0, Math.min(W - 1, Math.round(x)));
+    const d = colMax(curPow, xi, true);
+    g.strokeStyle = '#fff'; g.lineWidth = 1; g.setLineDash([4 * dpr, 4 * dpr]);
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x, H); g.stroke(); g.setLineDash([]);
+    const txt = `${f < 1000 ? f.toFixed(0) : (f / 1000).toFixed(2) + 'k'} Hz  ${d.toFixed(1)} dB`;
+    g.font = `bold ${12 * dpr}px sans-serif`;
+    const tw = g.measureText(txt).width + 8 * dpr, tx = Math.min(W - tw, x + 4 * dpr);
+    g.fillStyle = 'rgba(0,0,0,.75)'; g.fillRect(tx, 18 * dpr, tw, 18 * dpr);
+    g.fillStyle = '#fff'; g.fillText(txt, tx + 4 * dpr, 31 * dpr);
+  }
 }
 
-function stop() {
-  cancelAnimationFrame(raf);
-  stream?.getTracks().forEach(t => t.stop());
-  ctx?.close(); ctx = stream = null;
-  $('stop').disabled = true;
+function pushWaterfallRows() {
+  const W = wfBuf.width, H = wfBuf.height; if (!W || !mapB0 || mapB0.length !== W) { pendingRows.length = 0; return; }
+  const rowPx = Math.max(1, Math.round(dpr));
+  const n = Math.min(pendingRows.length, Math.floor(H / rowPx));
+  if (!n) return;
+  const rows = pendingRows.splice(0, pendingRows.length).slice(-n);
+  const shift = rowPx * rows.length;
+  gBuf.drawImage(wfBuf, 0, 0, W, H - shift, 0, shift, W, H - shift);
+  const img = gBuf.createImageData(W, shift), px = img.data, span = S.cMax - S.cMin;
+  rows.forEach((db, r) => {
+    const yTop = (rows.length - 1 - r) * rowPx; // 最新を一番上に
+    for (let x = 0; x < W; x++) {
+      let m = -Infinity; for (let k = mapB0[x]; k <= mapB1[x]; k++) if (db[k] > m) m = db[k];
+      const ci = Math.max(0, Math.min(255, Math.round((m - S.cMin) / span * 255))) * 3;
+      for (let yy = 0; yy < rowPx; yy++) {
+        const o = ((yTop + yy) * W + x) * 4;
+        px[o] = LUT[ci]; px[o + 1] = LUT[ci + 1]; px[o + 2] = LUT[ci + 2]; px[o + 3] = 255;
+      }
+    }
+  });
+  gBuf.putImageData(img, 0, 0);
 }
 
-const err = e => log('エラー: ' + e.name + ' / ' + e.message);
-$('start').onclick = () => open($('dev').disabled ? undefined : $('dev').value).catch(err);
-$('dev').onchange = e => open(e.target.value).catch(err);
-for (const id of ['ec','ns','agc']) $(id).onchange = () => { if (ctx) open(curDev).catch(err); };
-$('stop').onclick = stop;
-navigator.mediaDevices?.addEventListener?.('devicechange', async () => {
-  log('デバイス接続状態が変化しました');
-  if (!$('dev').disabled) await listDevices(curDev);
-});
+function drawWaterfall() {
+  const W = cvWf.width, H = cvWf.height, g = gWf; if (!W) return;
+  g.drawImage(wfBuf, 0, 0);
+  g.font = `${10 * dpr}px sans-serif`;
+  for (const f of freqTicks()) {
+    const x = fToX(f, W);
+    g.fillStyle = 'rgba(255,255,255,.35)'; g.fillRect(x, H - 6 * dpr, 1, 6 * dpr);
+    g.fillStyle = '#ccc'; g.fillText(fLabel(f), x + 2 * dpr, H - 3 * dpr);
+  }
+  // 時間目盛り（秒）
+  const rowPx = Math.max(1, Math.round(dpr)), secPx = rowPx * sr / hop;
+  g.fillStyle = '#ccc';
+  for (let s = 2; s * secPx < H - 14 * dpr; s += 2) { const y = s * secPx; g.fillRect(W - 6 * dpr, y, 6 * dpr, 1); g.fillText(s + 's', W - 26 * dpr, y - 2 * dpr); }
+  // カラーバー
+  const cbH = Math.min(H * 0.5, 120 * dpr), cbX = W - 10 * dpr, cbY = H - cbH - 18 * dpr;
+  for (let i = 0; i < cbH; i++) { const ci = Math.round((1 - i / cbH) * 255) * 3; g.fillStyle = `rgb(${LUT[ci]},${LUT[ci + 1]},${LUT[ci + 2]})`; g.fillRect(cbX, cbY + i, 6 * dpr, 1); }
+  g.fillStyle = '#ccc'; g.textAlign = 'right';
+  g.fillText(S.cMax, cbX - 2 * dpr, cbY + 8 * dpr); g.fillText(S.cMin, cbX - 2 * dpr, cbY + cbH);
+  g.textAlign = 'left';
+  if (cursorX !== null) { g.strokeStyle = 'rgba(255,255,255,.7)'; g.setLineDash([4 * dpr, 4 * dpr]); g.beginPath(); g.moveTo(cursorX * dpr, 0); g.lineTo(cursorX * dpr, H); g.stroke(); g.setLineDash([]); }
+}
+
+function updateFooter() {
+  $('stLvl').textContent = `${lastRms.toFixed(1)} / ${lastPeak.toFixed(1)}`;
+  $('stLvl').classList.toggle('clip', lastPeak > -1);
+  $('stBandK').textContent = `漏水帯域 ${fLabel(S.bandLo)}–${fLabel(S.bandHi)}Hz`;
+  $('stBand').textContent = `${curBandDb.toFixed(1)} dB`;
+  if (bgDb) {
+    const bgPow = new Float64Array(nBins); for (let k = 0; k < nBins; k++) bgPow[k] = Math.pow(10, bgDb[k] / 10);
+    const diff = curBandDb - bandPowDb(bgPow, S.bandLo, S.bandHi);
+    $('stDiff').textContent = `${diff >= 0 ? '+' : ''}${diff.toFixed(1)} dB`;
+    $('stDiff').style.color = diff >= 10 ? 'var(--ng)' : diff >= 5 ? 'var(--warn)' : 'var(--fg)';
+  } else { $('stDiff').textContent = '未登録'; $('stDiff').style.color = 'var(--sub)'; }
+}
+
+function loop() {
+  if (running && !hold) { pushWaterfallRows(); drawSpectrum(); updateFooter(); }
+  drawWaterfall();
+  if (rec) { const p = Math.min(1, rec.samples / rec.target); $('recBar').firstChild.style.width = (p * 100) + '%';
+    $('recMsg').textContent = `● 録音中 ${(rec.samples / sr).toFixed(1)} / ${S.recSec} 秒`; }
+  requestAnimationFrame(loop);
+}
+
+// カーソル（タップした周波数を表示。ダブルタップで消去）
+for (const c of [cvSpec, cvWf]) {
+  const set = e => { const r = c.getBoundingClientRect(); cursorX = e.clientX - r.left; if (hold) drawSpectrum(); };
+  c.addEventListener('pointerdown', e => { set(e); c.setPointerCapture(e.pointerId); });
+  c.addEventListener('pointermove', e => { if (e.buttons) set(e); });
+  c.addEventListener('dblclick', () => { cursorX = null; drawSpectrum(); });
+}
+
+// ---------------- 録音・保存 ----------------
+function showRecUi(on) {
+  $('btnRec').classList.toggle('on', on);
+  $('recMsg').style.display = on ? 'block' : 'none';
+  if (!on) $('recBar').firstChild.style.width = '0';
+}
+
+function startRec() {
+  if (!running || rec) return;
+  rec = { chunks: [], samples: 0, target: Math.round(S.recSec * sr), frames: [],
+          avgSum: new Float64Array(nBins), avgN: 0, peak: new Float64Array(nBins), startDate: new Date(), gps: null };
+  if (S.gps && navigator.geolocation) {
+    rec.gpsPromise = new Promise(res => navigator.geolocation.getCurrentPosition(
+      p => res({ lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy }),
+      () => res(null), { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }));
+  }
+  showRecUi(true);
+}
+
+async function finishRec() {
+  const r = rec; rec = null; showRecUi(false);
+  const pcm = new Float32Array(r.target); let o = 0;
+  for (const c of r.chunks) { const n = Math.min(c.length, r.target - o); pcm.set(c.subarray(0, n), o); o += n; if (o >= r.target) break; }
+  const avg = new Float64Array(nBins); for (let k = 0; k < nBins; k++) avg[k] = r.avgSum[k] / Math.max(1, r.avgN);
+  const gps = r.gpsPromise ? await r.gpsPromise : null;
+  lastResult = { kind: 'rec', date: r.startDate, pcm, frames: r.frames, avg, peak: r.peak, n: r.avgN, gps };
+  openSave();
+}
+
+function snapshot() {
+  if (!avgN) return;
+  const avg = new Float64Array(nBins); for (let k = 0; k < nBins; k++) avg[k] = avgSum[k] / avgN;
+  lastResult = { kind: 'snap', date: new Date(), avg, peak: peakPow.slice(), cur: curPow.slice(), n: avgN, gps: null };
+  if (S.gps && navigator.geolocation) navigator.geolocation.getCurrentPosition(
+    p => { lastResult.gps = { lat: p.coords.latitude, lon: p.coords.longitude, acc: p.coords.accuracy }; showGps(); },
+    () => {}, { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 });
+  openSave();
+}
+
+function showGps() {
+  const g = lastResult && lastResult.gps;
+  $('saveGps').textContent = !S.gps ? '' : g ? `位置：${g.lat.toFixed(6)}, ${g.lon.toFixed(6)}（±${Math.round(g.acc)}m）` : '位置：取得できませんでした';
+}
+
+function openSave() {
+  const r = lastResult, band = bandPowDb(r.avg, S.bandLo, S.bandHi);
+  $('saveTitle').textContent = r.kind === 'rec' ? `録音完了（${S.recSec}秒）` : 'スペクトルCSVの保存';
+  let s = `漏水帯域（${S.bandLo}–${S.bandHi}Hz）平均：${band.toFixed(1)} dB`;
+  if (bgDb) { const bp = bgDb.map(d => Math.pow(10, d / 10)); s += ` ／ 背景差：${(band - bandPowDb(bp, S.bandLo, S.bandHi)).toFixed(1)} dB`; }
+  s += `<br>平均フレーム数：${r.n}`;
+  $('saveSummary').innerHTML = s;
+  $('inSite').value = S.siteId; $('inMemo').value = '';
+  showGps();
+  $('btnShare').style.display = navigator.canShare ? '' : 'none';
+  $('dlgSave').showModal();
+}
+
+const pad = n => String(n).padStart(2, '0');
+const stamp = d => `${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}_${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+const isoLocal = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+const csvq = v => /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : String(v);
+
+function metaLines(r, site, memo) {
+  const f = v => v === undefined ? '不明' : (v ? 'ON' : 'OFF');
+  const band = bandPowDb(r.avg, S.bandLo, S.bandHi);
+  let diff = '';
+  if (bgDb) { const bp = bgDb.map(d => Math.pow(10, d / 10)); diff = (band - bandPowDb(bp, S.bandLo, S.bandHi)).toFixed(2); }
+  const m = [
+    ['アプリ', `漏水音スペクトラム解析 v${APP_VER}`], ['種別', r.kind === 'rec' ? '録音' : 'スナップショット'],
+    ['日時', isoLocal(r.date)], ['地点ID', site], ['メモ', memo],
+    ['緯度', r.gps ? r.gps.lat : ''], ['経度', r.gps ? r.gps.lon : ''], ['位置精度m', r.gps ? Math.round(r.gps.acc) : ''],
+    ['入力デバイス', trackInfo.label], ['エコーキャンセル', f(trackInfo.ec)], ['ノイズ抑制', f(trackInfo.ns)], ['自動音量', f(trackInfo.agc)],
+    ['サンプリング周波数Hz', sr], ['FFTサイズ', N], ['窓関数', S.win], ['周波数分解能Hz', binHz.toFixed(4)], ['ホップ', hop],
+    ['平均フレーム数', r.n], ['録音秒数', r.kind === 'rec' ? S.recSec : ''],
+    ['漏水帯域Hz', `${S.bandLo}-${S.bandHi}`], ['漏水帯域レベルdB', band.toFixed(2)], ['背景差dB', diff],
+    ['単位', 'dBFS（フルスケール正弦波=0dB、絶対音圧ではない）'], ['端末', navigator.userAgent]
+  ];
+  return m.map(([k, v]) => `# ${csvq(k)},${csvq(v)}`).join('\n') + '\n';
+}
+
+function spectrumCsv(r, site, memo) {
+  const kMax = Math.min(nBins - 1, Math.floor(S.csvMax / binHz));
+  const cols = ['周波数Hz', ...(r.cur ? ['現在dB'] : []), '平均dB', 'ピークdB', '背景dB'];
+  let s = metaLines(r, site, memo) + cols.join(',') + '\n';
+  for (let k = 0; k <= kMax; k++) {
+    const row = [(k * binHz).toFixed(2)];
+    if (r.cur) row.push(toDb(r.cur[k]).toFixed(1));
+    row.push(toDb(r.avg[k]).toFixed(1), toDb(r.peak[k]).toFixed(1), bgDb ? bgDb[k].toFixed(1) : '');
+    s += row.join(',') + '\n';
+  }
+  return '﻿' + s;
+}
+
+function spectrogramCsv(r, site, memo) {
+  if (!r.frames.length) return null;
+  const nb = r.frames[0].db.length;
+  let s = metaLines(r, site, memo) + '時刻s';
+  for (let k = 0; k < nb; k++) s += ',' + (k * binHz).toFixed(2);
+  s += '\n';
+  const parts = [s];
+  for (const fr of r.frames) {
+    let line = fr.t.toFixed(4);
+    for (let k = 0; k < nb; k++) line += ',' + fr.db[k].toFixed(1);
+    parts.push(line + '\n');
+  }
+  return '﻿' + parts.join('');
+}
+
+function wavBlob(pcm, rate) {
+  const n = pcm.length, buf = new ArrayBuffer(44 + n * 2), v = new DataView(buf);
+  const w = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  w(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); w(8, 'WAVE'); w(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, 'data'); v.setUint32(40, n * 2, true);
+  for (let i = 0; i < n; i++) { const x = Math.max(-1, Math.min(1, pcm[i])); v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true); }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+
+function buildFiles() {
+  const r = lastResult, site = $('inSite').value.trim(), memo = $('inMemo').value.trim();
+  S.siteId = site; saveS();
+  const safe = site.replace(/[\\/:*?"<>|\s]+/g, '_');
+  const base = `leak_${safe ? safe + '_' : ''}${stamp(r.date)}`;
+  const files = [];
+  if (r.kind === 'rec') files.push(new File([wavBlob(r.pcm, sr)], base + '.wav', { type: 'audio/wav' }));
+  files.push(new File([spectrumCsv(r, site, memo)], base + '_spectrum.csv', { type: 'text/csv' }));
+  if (r.kind === 'rec') { const sg = spectrogramCsv(r, site, memo); if (sg) files.push(new File([sg], base + '_spectrogram.csv', { type: 'text/csv' })); }
+  return files;
+}
+
+async function downloadFiles(files) {
+  for (const f of files) {
+    const a = document.createElement('a'); a.href = URL.createObjectURL(f); a.download = f.name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+    await new Promise(r => setTimeout(r, 500));
+  }
+}
+
+$('btnSave').onclick = async () => { const files = buildFiles(); $('dlgSave').close(); await downloadFiles(files); };
+$('btnShare').onclick = async () => {
+  const files = buildFiles();
+  try {
+    if (navigator.canShare && navigator.canShare({ files })) { await navigator.share({ files, title: files[0].name }); $('dlgSave').close(); }
+    else { alert('この端末ではファイル共有に対応していません。「保存」を使ってください。'); }
+  } catch (e) { if (e.name !== 'AbortError') alert('共有に失敗しました：' + e.message); }
+};
+$('btnDiscard').onclick = () => { lastResult = null; $('dlgSave').close(); };
+
+// ---------------- 設定ダイアログ ----------------
+async function openSettings() {
+  const sel = $('sDev'); sel.innerHTML = '<option value="">既定</option>';
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId);
+    for (const d of devs) { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || d.deviceId.slice(0, 8); sel.appendChild(o); }
+  } catch (e) {}
+  sel.value = S.deviceId; if (sel.value !== S.deviceId) sel.value = '';
+  $('sEc').checked = S.ec; $('sNs').checked = S.ns; $('sAgc').checked = S.agc;
+  $('sFft').value = S.fft; $('sWin').value = S.win; $('sSmooth').value = S.smooth; $('sLog').value = S.logx ? '1' : '0';
+  $('sBandLo').value = S.bandLo; $('sBandHi').value = S.bandHi;
+  $('sFMin').value = S.fMin; $('sFMax').value = S.fMax; $('sDbMin').value = S.dbMin; $('sDbMax').value = S.dbMax;
+  $('sCMin').value = S.cMin; $('sCMax').value = S.cMax; $('sRecSec').value = S.recSec; $('sCsvMax').value = S.csvMax; $('sGps').checked = S.gps;
+  showRes(); $('dlgSet').showModal();
+}
+function showRes() {
+  const n = +$('sFft').value;
+  $('sRes').textContent = `周波数分解能 ${(sr / n).toFixed(2)} Hz ／ 1フレームの長さ ${(n / sr * 1000).toFixed(0)} ms`;
+}
+$('sFft').onchange = showRes;
+$('btnSetCancel').onclick = () => $('dlgSet').close();
+$('btnSetOk').onclick = async () => {
+  const num = (id, lo, hi) => Math.max(lo, Math.min(hi, +$(id).value || 0));
+  const old = { ...S };
+  S.deviceId = $('sDev').value; S.ec = $('sEc').checked; S.ns = $('sNs').checked; S.agc = $('sAgc').checked;
+  S.fft = +$('sFft').value; S.win = $('sWin').value; S.smooth = num('sSmooth', 0, 0.95); S.logx = $('sLog').value === '1';
+  S.bandLo = num('sBandLo', 1, 24000); S.bandHi = Math.max(S.bandLo + 1, num('sBandHi', 2, 24000));
+  S.fMin = num('sFMin', 0, 23000); S.fMax = Math.max(S.fMin + 10, num('sFMax', 10, 24000));
+  S.dbMin = num('sDbMin', -200, 0); S.dbMax = Math.max(S.dbMin + 10, num('sDbMax', -190, 20));
+  S.cMin = num('sCMin', -200, 0); S.cMax = Math.max(S.cMin + 5, num('sCMax', -195, 20));
+  S.recSec = num('sRecSec', 1, 60); S.csvMax = num('sCsvMax', 100, 24000); S.gps = $('sGps').checked;
+  saveS(); $('dlgSet').close();
+  const audioChanged = ['deviceId', 'ec', 'ns', 'agc'].some(k => old[k] !== S[k]);
+  const anaChanged = ['fft', 'win'].some(k => old[k] !== S[k]);
+  const axisChanged = ['logx', 'fMin', 'fMax'].some(k => old[k] !== S[k]);
+  try {
+    if (audioChanged) await startAudio();
+    else if (anaChanged && ctx) initAnalysis();
+    else if (axisChanged) { buildMaps(); clearWaterfall(); }
+    updateDevLine();
+  } catch (e) { showError(e); }
+};
+
+// ---------------- ボタン ----------------
+function showError(e) {
+  $('startOverlay').style.display = 'flex';
+  $('err').textContent = `開始できませんでした：${e.name || ''} ${e.message || e}\n` +
+    (e.name === 'NotAllowedError' ? 'マイクの使用が許可されていません。アドレスバー左のアイコンからマイクを許可してください。' : '');
+}
+
+$('btnStart').onclick = async () => {
+  $('err').textContent = '';
+  try { await startAudio(); $('startOverlay').style.display = 'none'; } catch (e) { showError(e); }
+};
+$('btnRun').onclick = async () => {
+  if (running) { await stopAudio(); $('btnRun').textContent = '▶ 開始'; $('btnRun').classList.add('on'); }
+  else { try { await startAudio(); } catch (e) { showError(e); } }
+};
+$('btnHold').onclick = () => { hold = !hold; $('btnHold').classList.toggle('on', hold); $('btnHold').textContent = hold ? '▶ 再開' : '⏸ 静止'; pendingRows.length = 0; };
+$('btnRec').onclick = () => startRec();
+$('btnSnap').onclick = () => snapshot();
+$('btnBg').onclick = () => {
+  if (!avgN) return;
+  const register = () => { bgDb = new Float32Array(nBins); for (let k = 0; k < nBins; k++) bgDb[k] = toDb(avgSum[k] / avgN); };
+  if (!bgDb) register();
+  else if (confirm('背景スペクトルを解除しますか？\n（キャンセルで現在の平均を新しい背景として登録し直します）')) bgDb = null;
+  else register();
+  $('btnBg').classList.toggle('on', !!bgDb);
+};
+$('btnReset').onclick = () => resetStats();
+$('btnSet').onclick = () => openSettings();
+
+new ResizeObserver(resize).observe(document.body);
+resize();
+requestAnimationFrame(loop);
+
+if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
 </body>
 </html>

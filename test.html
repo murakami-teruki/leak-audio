@@ -1,0 +1,197 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>外部マイク入力テスト v3</title>
+<style>
+  :root { --bg:#111; --fg:#eee; --sub:#9aa; --ok:#4c8; --ng:#e55; --acc:#3af; }
+  body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; font-size:15px; }
+  h1 { font-size:18px; margin:0 0 12px; }
+  h2 { font-size:14px; color:var(--sub); margin:14px 0 4px; font-weight:normal; }
+  button, select { font-size:16px; padding:10px 14px; margin:4px 0; width:100%; border-radius:8px; border:1px solid #444; background:#222; color:var(--fg); }
+  button.primary { background:var(--acc); color:#000; border:none; font-weight:bold; }
+  .row { display:flex; gap:8px; } .row > * { flex:1; }
+  table { width:100%; border-collapse:collapse; margin:8px 0; font-size:13px; }
+  td { padding:4px 6px; border-bottom:1px solid #333; vertical-align:top; word-break:break-all; }
+  td:first-child { color:var(--sub); width:42%; }
+  .ok { color:var(--ok); } .ng { color:var(--ng); }
+  canvas { width:100%; display:block; background:#000; border-radius:6px; }
+  #spec { height:200px; } #hist { height:120px; }
+  #big { font-size:32px; font-weight:bold; text-align:center; margin:8px 0 0; font-variant-numeric:tabular-nums; }
+  #bands { font-size:13px; text-align:center; color:var(--sub); font-variant-numeric:tabular-nums; }
+  #log { font-size:12px; color:var(--sub); white-space:pre-wrap; margin-top:8px; }
+</style>
+</head>
+<body>
+<h1>外部マイク入力テスト v3</h1>
+
+<button class="primary" id="start">① マイク開始</button>
+<select id="dev" disabled><option>（開始後にデバイス一覧を表示）</option></select>
+<div class="row">
+  <button id="stop" disabled>停止</button>
+</div>
+<div class="row" style="font-size:14px;margin:6px 0">
+  <label><input type="checkbox" id="ec"> エコーキャンセル</label>
+  <label><input type="checkbox" id="ns"> ノイズ抑制</label>
+  <label><input type="checkbox" id="agc"> 自動音量</label>
+</div>
+
+<div id="big">-- dBFS</div>
+<div id="bands">低域 20-200Hz: -- / 中域 200-2kHz: -- / 高域 2k-8kHz: --</div>
+
+<h2>レベル履歴（直近10秒）— マイクのON/OFFや叩いたときの変化を見る</h2>
+<canvas id="hist"></canvas>
+
+<h2>スペクトル（対数軸 20Hz〜20kHz、-140〜0 dBFS）</h2>
+<canvas id="spec"></canvas>
+
+<table id="info"></table>
+<table id="env"></table>
+<div id="log"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const log = m => { $('log').textContent = new Date().toLocaleTimeString() + ' ' + m + '\n' + $('log').textContent; };
+const row = (t, k, v, cls='') => { t.insertAdjacentHTML('beforeend', `<tr><td>${k}</td><td class="${cls}">${v}</td></tr>`); };
+
+const env = $('env');
+row(env, 'URLスキーム', location.protocol);
+row(env, 'セキュアコンテキスト', window.isSecureContext ? 'OK' : 'NG', window.isSecureContext ? 'ok' : 'ng');
+row(env, 'UserAgent', navigator.userAgent);
+
+let ctx, stream, raf, curDev = '';
+const hist = []; // [time, dB]
+
+async function open(deviceId) {
+  stop();
+  const audio = {
+    echoCancellation: $('ec').checked, noiseSuppression: $('ns').checked, autoGainControl: $('agc').checked
+  };
+  const modeTxt = `EC:${audio.echoCancellation ? 'ON' : 'OFF'} NS:${audio.noiseSuppression ? 'ON' : 'OFF'} AGC:${audio.autoGainControl ? 'ON' : 'OFF'}`;
+  if (deviceId) audio.deviceId = { exact: deviceId };
+  stream = await navigator.mediaDevices.getUserMedia({ audio });
+  ctx = new AudioContext();
+  const src = ctx.createMediaStreamSource(stream);
+  const an = ctx.createAnalyser();
+  an.fftSize = 8192; an.smoothingTimeConstant = 0.5;
+  an.minDecibels = -140; an.maxDecibels = 0;
+  src.connect(an);
+
+  const tr = stream.getAudioTracks()[0];
+  const s = tr.getSettings();
+  curDev = s.deviceId;
+  const info = $('info'); info.innerHTML = '';
+  row(info, '使用中デバイス', tr.label || '(ラベルなし)');
+  row(info, 'サンプリング周波数', ctx.sampleRate + ' Hz');
+  for (const k of ['echoCancellation', 'noiseSuppression', 'autoGainControl']) {
+    const v = s[k];
+    row(info, k, v === undefined ? '不明' : (v ? 'ON' : 'OFF'), v ? 'ng' : 'ok');
+  }
+  log(`開始: ${tr.label} / ${modeTxt}`);
+  tr.onended = () => log('トラックが終了しました（デバイス切断？）');
+  tr.onmute = () => log('トラックがミュートされました');
+
+  await listDevices(curDev);
+  $('stop').disabled = false;
+  draw(an);
+}
+
+async function listDevices(current) {
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput');
+  const sel = $('dev'); sel.innerHTML = '';
+  devs.forEach((d, i) => {
+    const o = document.createElement('option');
+    o.value = d.deviceId; o.textContent = d.label || `入力 ${i + 1}`;
+    if (d.deviceId === current) o.selected = true;
+    sel.appendChild(o);
+  });
+  sel.disabled = false;
+}
+
+function bandDb(freq, binHz, f1, f2) {
+  // 帯域内パワー合計（dBFS相当）
+  let p = 0;
+  for (let i = Math.max(1, Math.floor(f1 / binHz)); i <= Math.min(freq.length - 1, Math.ceil(f2 / binHz)); i++) p += Math.pow(10, freq[i] / 10);
+  return 10 * Math.log10(p + 1e-20);
+}
+
+function draw(an) {
+  const sc = $('spec'), sg = sc.getContext('2d');
+  const hc = $('hist'), hg = hc.getContext('2d');
+  const freq = new Float32Array(an.frequencyBinCount);
+  const time = new Float32Array(an.fftSize);
+  const nyq = ctx.sampleRate / 2, binHz = nyq / freq.length;
+  const fMin = 20, fMax = Math.min(20000, nyq);
+  const lx = f => Math.log(f / fMin) / Math.log(fMax / fMin);
+  const dpr = devicePixelRatio;
+  hist.length = 0;
+
+  const loop = () => {
+    for (const c of [sc, hc]) { c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr; }
+    an.getFloatFrequencyData(freq);
+    an.getFloatTimeDomainData(time);
+
+    let sum = 0, pk = 0;
+    for (const x of time) { sum += x * x; pk = Math.max(pk, Math.abs(x)); }
+    const db = 10 * Math.log10(sum / time.length + 1e-20);
+    const pkDb = 20 * Math.log10(pk + 1e-10);
+    $('big').textContent = `${db.toFixed(1)} dBFS（ピーク ${pkDb.toFixed(1)}）`;
+    $('big').style.color = pkDb > -1 ? 'var(--ng)' : 'var(--fg)';
+    $('bands').textContent =
+      `低域 20-200Hz: ${bandDb(freq, binHz, 20, 200).toFixed(1)} / 中域 200-2kHz: ${bandDb(freq, binHz, 200, 2000).toFixed(1)} / 高域 2k-8kHz: ${bandDb(freq, binHz, 2000, 8000).toFixed(1)}`;
+
+    // レベル履歴
+    const now = performance.now();
+    hist.push([now, db]);
+    while (hist.length && now - hist[0][0] > 10000) hist.shift();
+    const W = hc.width, H = hc.height, dMin = -120, dMax = 0;
+    hg.fillStyle = '#000'; hg.fillRect(0, 0, W, H);
+    hg.strokeStyle = '#333'; hg.fillStyle = '#9aa'; hg.font = `${10 * dpr}px sans-serif`;
+    for (let d = -100; d < 0; d += 20) { const y = (d - dMax) / (dMin - dMax) * H; hg.beginPath(); hg.moveTo(0, y); hg.lineTo(W, y); hg.stroke(); hg.fillText(d, 2, y - 2); }
+    hg.strokeStyle = '#4c8'; hg.lineWidth = 1.5 * dpr; hg.beginPath();
+    hist.forEach(([t, d], i) => { const x = W - (now - t) / 10000 * W, y = (d - dMax) / (dMin - dMax) * H; i ? hg.lineTo(x, y) : hg.moveTo(x, y); });
+    hg.stroke();
+
+    // スペクトル（対数軸）
+    const SW = sc.width, SH = sc.height;
+    sg.fillStyle = '#000'; sg.fillRect(0, 0, SW, SH);
+    sg.strokeStyle = '#333'; sg.fillStyle = '#9aa'; sg.font = `${10 * dpr}px sans-serif`;
+    for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]) {
+      if (f > fMax) continue;
+      const x = lx(f) * SW; sg.beginPath(); sg.moveTo(x, 0); sg.lineTo(x, SH); sg.stroke();
+      sg.fillText(f >= 1000 ? f / 1000 + 'k' : f, x + 2, SH - 4);
+    }
+    sg.strokeStyle = '#3af'; sg.beginPath();
+    let first = true;
+    for (let i = 1; i < freq.length; i++) {
+      const f = i * binHz; if (f < fMin || f > fMax) continue;
+      const x = lx(f) * SW, y = (-freq[i] / 140) * SH;
+      first ? sg.moveTo(x, y) : sg.lineTo(x, y); first = false;
+    }
+    sg.stroke();
+
+    raf = requestAnimationFrame(loop);
+  };
+  loop();
+}
+
+function stop() {
+  cancelAnimationFrame(raf);
+  stream?.getTracks().forEach(t => t.stop());
+  ctx?.close(); ctx = stream = null;
+  $('stop').disabled = true;
+}
+
+const err = e => log('エラー: ' + e.name + ' / ' + e.message);
+$('start').onclick = () => open($('dev').disabled ? undefined : $('dev').value).catch(err);
+$('dev').onchange = e => open(e.target.value).catch(err);
+for (const id of ['ec','ns','agc']) $(id).onchange = () => { if (ctx) open(curDev).catch(err); };
+$('stop').onclick = stop;
+navigator.mediaDevices?.addEventListener?.('devicechange', async () => {
+  log('デバイス接続状態が変化しました');
+  if (!$('dev').disabled) await listDevices(curDev);
+});
+</script>
+</body>
+</html>
