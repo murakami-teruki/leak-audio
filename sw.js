@@ -1,5 +1,5 @@
 // オフライン用キャッシュ。オンライン時は常に最新を取得し、失敗時のみキャッシュを使う（ネットワーク優先）
-const CACHE = 'leak-audio-v1.4';
+const CACHE = 'leak-audio-v1.5';
 const FILES = ['./', 'index.html', 'test.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 const isCacheable = u => { const x = new URL(u); return x.origin === location.origin || x.host === 'cdnjs.cloudflare.com'; };
 

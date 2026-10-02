@@ -222,6 +222,8 @@
       <div><label>下画面 色 上限 dB</label><input type="number" id="sCMax"></div>
     </div>
     <button id="btnAuto" type="button">現在の信号に合わせて自動調整</button>
+    <div class="chk"><label><input type="checkbox" id="sCAuto">下画面の色の範囲を自動で追従（白飛び防止）</label></div>
+    <div class="grid2"><div><label>自動時の色の幅 dB</label><input type="number" id="sCSpan"></div></div>
     <div class="chk"><label><input type="checkbox" id="sWfDiff">下画面を「背景との差」で表示</label></div>
     <div class="grid2"><div><label>差表示の上限 dB</label><input type="number" id="sDiffMax"></div></div>
     <div class="note">背景を登録すると、背景より大きい成分だけが色付きで表示されます（背景以下は黒）。保存するCSV・WAVは元のままです。</div>
@@ -236,12 +238,12 @@
     <button id="btnSetCancel">キャンセル</button>
     <button id="btnSetOk" class="primary">適用</button>
   </div>
-  <div class="note"><a href="test.html">入力テストページ</a> ／ v1.4</div>
+  <div class="note"><a href="test.html">入力テストページ</a> ／ v1.5</div>
 </dialog>
 
 <script>
 'use strict';
-const APP_VER = '1.4';
+const APP_VER = '1.5';
 const $ = id => document.getElementById(id);
 const setBtn = (id, icon, label) => { $(id).innerHTML = `<i>${icon}</i>${label}`; };
 
@@ -250,8 +252,9 @@ const DEFAULTS = {
   deviceId:'', ec:true, ns:false, agc:false,
   fft:8192, win:'hann', smooth:0.6, logx:true, bandLo:100, bandHi:2000,
   fMin:20, fMax:5000, dbMin:-120, dbMax:0, cMin:-100, cMax:-30,
-  recSec:5, csvMax:8000, gps:false, siteId:'', wfDiff:false, diffMax:30
+  recSec:5, csvMax:8000, gps:false, siteId:'', wfDiff:false, diffMax:30, cAuto:true, cSpan:60
 };
+let autoTop = null; // 色レンジ自動追従用（直近の最大レベル）
 let S = { ...DEFAULTS };
 try { Object.assign(S, JSON.parse(localStorage.getItem('leakAudioSettings') || '{}')); } catch (e) {}
 const saveS = () => { try { localStorage.setItem('leakAudioSettings', JSON.stringify(S)); } catch (e) {} };
@@ -589,14 +592,23 @@ function pushWaterfallRows() {
   const shift = rowPx * rows.length;
   gBuf.drawImage(wfBuf, 0, 0, W, H - shift, 0, shift, W, H - shift);
   const diff = S.wfDiff && bgDb;
-  const lo = diff ? 0 : S.cMin, span = diff ? S.diffMax : S.cMax - S.cMin;
-  const img = gBuf.createImageData(W, shift), px = img.data;
+  const img = gBuf.createImageData(W, shift), px = img.data, vals = new Float32Array(W);
   rows.forEach((db, r) => {
     const yTop = (rows.length - 1 - r) * rowPx; // 最新を一番上に
+    let rowMax = -Infinity;
     for (let x = 0; x < W; x++) {
       let m = -Infinity;
       for (let k = mapB0[x]; k <= mapB1[x]; k++) { const v = diff ? db[k] - bgDb[k] : db[k]; if (v > m) m = v; }
-      const ci = Math.max(0, Math.min(255, Math.round((m - lo) / span * 255))) * 3;
+      vals[x] = m; if (m > rowMax) rowMax = m;
+    }
+    // 色レンジ自動追従：大きい音にはすぐ合わせ、小さくなったらゆっくり下げる（白飛び防止）
+    if (S.cAuto && !diff && isFinite(rowMax)) {
+      autoTop = autoTop === null || rowMax > autoTop ? rowMax : autoTop - 0.03;
+      S.cMax = Math.round(autoTop + 3); S.cMin = S.cMax - S.cSpan;
+    }
+    const lo = diff ? 0 : S.cMin, span = diff ? S.diffMax : S.cMax - S.cMin;
+    for (let x = 0; x < W; x++) {
+      const ci = Math.max(0, Math.min(255, Math.round((vals[x] - lo) / span * 255))) * 3;
       for (let yy = 0; yy < rowPx; yy++) {
         const o = ((yTop + yy) * W + x) * 4;
         px[o] = LUT[ci]; px[o + 1] = LUT[ci + 1]; px[o + 2] = LUT[ci + 2]; px[o + 3] = 255;
@@ -1054,6 +1066,7 @@ async function openSettings() {
   $('sFMin').value = S.fMin; $('sFMax').value = S.fMax; $('sDbMin').value = S.dbMin; $('sDbMax').value = S.dbMax;
   $('sCMin').value = S.cMin; $('sCMax').value = S.cMax; $('sRecSec').value = S.recSec; $('sCsvMax').value = S.csvMax;
   $('sWfDiff').checked = S.wfDiff; $('sDiffMax').value = S.diffMax;
+  $('sCAuto').checked = S.cAuto; $('sCSpan').value = S.cSpan;
   showRes(); $('dlgSet').showModal();
 }
 function showRes() {
@@ -1074,6 +1087,7 @@ $('btnSetOk').onclick = async () => {
   S.cMin = num('sCMin', -200, 0); S.cMax = Math.max(S.cMin + 5, num('sCMax', -195, 20));
   S.recSec = num('sRecSec', 1, 60); S.csvMax = num('sCsvMax', 100, 24000);
   S.wfDiff = $('sWfDiff').checked; S.diffMax = num('sDiffMax', 5, 80);
+  S.cAuto = $('sCAuto').checked; S.cSpan = num('sCSpan', 20, 120); autoTop = null;
   saveS(); $('dlgSet').close();
   const audioChanged = ['deviceId', 'ec', 'ns', 'agc'].some(k => old[k] !== S[k]);
   const anaChanged = ['fft', 'win'].some(k => old[k] !== S[k]);
