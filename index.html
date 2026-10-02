@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>外部マイク入力テスト v2</title>
+<title>外部マイク入力テスト v3</title>
 <style>
   :root { --bg:#111; --fg:#eee; --sub:#9aa; --ok:#4c8; --ng:#e55; --acc:#3af; }
   body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; font-size:15px; }
@@ -24,16 +24,17 @@
 </style>
 </head>
 <body>
-<h1>外部マイク入力テスト v2</h1>
+<h1>外部マイク入力テスト v3</h1>
 
 <button class="primary" id="start">① マイク開始</button>
 <select id="dev" disabled><option>（開始後にデバイス一覧を表示）</option></select>
 <div class="row">
-  <select id="mode">
-    <option value="raw">音声処理 すべてOFF</option>
-    <option value="default">ブラウザ標準（処理ON）</option>
-  </select>
   <button id="stop" disabled>停止</button>
+</div>
+<div class="row" style="font-size:14px;margin:6px 0">
+  <label><input type="checkbox" id="ec"> エコーキャンセル</label>
+  <label><input type="checkbox" id="ns"> ノイズ抑制</label>
+  <label><input type="checkbox" id="agc"> 自動音量</label>
 </div>
 
 <div id="big">-- dBFS</div>
@@ -64,10 +65,10 @@ const hist = []; // [time, dB]
 
 async function open(deviceId) {
   stop();
-  const raw = $('mode').value === 'raw';
-  const audio = raw
-    ? { echoCancellation:false, noiseSuppression:false, autoGainControl:false, channelCount:1 }
-    : {};
+  const audio = {
+    echoCancellation: $('ec').checked, noiseSuppression: $('ns').checked, autoGainControl: $('agc').checked
+  };
+  const modeTxt = `EC:${audio.echoCancellation ? 'ON' : 'OFF'} NS:${audio.noiseSuppression ? 'ON' : 'OFF'} AGC:${audio.autoGainControl ? 'ON' : 'OFF'}`;
   if (deviceId) audio.deviceId = { exact: deviceId };
   stream = await navigator.mediaDevices.getUserMedia({ audio });
   ctx = new AudioContext();
@@ -87,7 +88,7 @@ async function open(deviceId) {
     const v = s[k];
     row(info, k, v === undefined ? '不明' : (v ? 'ON' : 'OFF'), v ? 'ng' : 'ok');
   }
-  log(`開始: ${tr.label} / ${raw ? '処理OFF' : '標準'}`);
+  log(`開始: ${tr.label} / ${modeTxt}`);
   tr.onended = () => log('トラックが終了しました（デバイス切断？）');
   tr.onmute = () => log('トラックがミュートされました');
 
@@ -185,7 +186,7 @@ function stop() {
 const err = e => log('エラー: ' + e.name + ' / ' + e.message);
 $('start').onclick = () => open($('dev').disabled ? undefined : $('dev').value).catch(err);
 $('dev').onchange = e => open(e.target.value).catch(err);
-$('mode').onchange = () => { if (ctx) open(curDev).catch(err); };
+for (const id of ['ec','ns','agc']) $(id).onchange = () => { if (ctx) open(curDev).catch(err); };
 $('stop').onclick = stop;
 navigator.mediaDevices?.addEventListener?.('devicechange', async () => {
   log('デバイス接続状態が変化しました');
