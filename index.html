@@ -236,12 +236,12 @@
     <button id="btnSetCancel">キャンセル</button>
     <button id="btnSetOk" class="primary">適用</button>
   </div>
-  <div class="note"><a href="test.html">入力テストページ</a> ／ v1.3</div>
+  <div class="note"><a href="test.html">入力テストページ</a> ／ v1.4</div>
 </dialog>
 
 <script>
 'use strict';
-const APP_VER = '1.3';
+const APP_VER = '1.4';
 const $ = id => document.getElementById(id);
 const setBtn = (id, icon, label) => { $(id).innerHTML = `<i>${icon}</i>${label}`; };
 
@@ -385,14 +385,35 @@ class Tap extends AudioWorkletProcessor {
 }
 registerProcessor('tap', Tap);`;
 
+// 外部マイクらしい入力を探す（USB → 有線ヘッドセットの順）。deviceId '' = 自動、'default' = OS任せ
+const isExternal = label => /usb/i.test(label) || (/wired|有線|headset/i.test(label) && !/earpiece|speaker/i.test(label));
+async function pickExternal() {
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput' && d.deviceId && d.deviceId !== 'default');
+    const d = devs.find(d => /usb/i.test(d.label)) || devs.find(d => isExternal(d.label));
+    return d ? d.deviceId : '';
+  } catch (e) { return ''; }
+}
+
 async function startAudio() {
   await stopAudio();
   const audio = { echoCancellation: S.ec, noiseSuppression: S.ns, autoGainControl: S.agc, channelCount: 1 };
-  if (S.deviceId) audio.deviceId = { exact: S.deviceId };
+  const auto = S.deviceId === '';
+  let want = auto ? await pickExternal() : S.deviceId === 'default' ? '' : S.deviceId;
+  if (want) audio.deviceId = { exact: want };
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio });
+    // 初回は許可前でデバイス名が取れないため、許可後に外部マイクを探して開き直す
+    if (auto && !want) {
+      const p = await pickExternal();
+      if (p && p !== stream.getAudioTracks()[0].getSettings().deviceId) {
+        stream.getTracks().forEach(t => t.stop());
+        audio.deviceId = { exact: p };
+        stream = await navigator.mediaDevices.getUserMedia({ audio });
+      }
+    }
   } catch (e) {
-    if (e.name === 'OverconstrainedError' && S.deviceId) { S.deviceId = ''; saveS(); return startAudio(); }
+    if (e.name === 'OverconstrainedError' && S.deviceId !== '') { S.deviceId = ''; saveS(); return startAudio(); }
     throw e;
   }
   ctx = new AudioContext({ latencyHint: 'interactive' });
@@ -432,8 +453,9 @@ async function stopAudio() {
 
 function updateDevLine() {
   const f = v => v === undefined ? '?' : (v ? 'ON' : 'OFF');
-  $('stDev').classList.remove('clip');
-  $('stDev').textContent = `${trackInfo.label || '入力'} ｜ ${sr} Hz ｜ FFT ${N}（${binHz.toFixed(2)} Hz）｜ EC:${f(trackInfo.ec)} NS:${f(trackInfo.ns)} AGC:${f(trackInfo.agc)}`;
+  const ext = isExternal(trackInfo.label || '');
+  $('stDev').classList.toggle('clip', !ext);
+  $('stDev').textContent = `${ext ? '' : '⚠ 外部マイク未検出（設定で入力デバイスを確認）：'}${trackInfo.label || '入力'} ｜ ${sr} Hz ｜ FFT ${N}（${binHz.toFixed(2)} Hz）｜ EC:${f(trackInfo.ec)} NS:${f(trackInfo.ns)} AGC:${f(trackInfo.agc)}`;
 }
 
 async function requestWake() {
@@ -1020,12 +1042,12 @@ $('mapExport').onclick = async () => {
 
 // ---------------- 設定ダイアログ ----------------
 async function openSettings() {
-  const sel = $('sDev'); sel.innerHTML = '<option value="">既定</option>';
+  const sel = $('sDev'); sel.innerHTML = '<option value="">自動（外部マイク優先）</option><option value="default">既定（OSに任せる）</option>';
   try {
     const devs = (await navigator.mediaDevices.enumerateDevices()).filter(d => d.kind === 'audioinput' && d.deviceId !== 'default' && d.deviceId);
     for (const d of devs) { const o = document.createElement('option'); o.value = d.deviceId; o.textContent = d.label || d.deviceId.slice(0, 8); sel.appendChild(o); }
   } catch (e) {}
-  sel.value = S.deviceId; if (sel.value !== S.deviceId) sel.value = '';
+  sel.value = S.deviceId; if (sel.value !== S.deviceId) { S.deviceId = ''; sel.value = ''; }
   $('sEc').checked = S.ec; $('sNs').checked = S.ns; $('sAgc').checked = S.agc;
   $('sFft').value = S.fft; $('sWin').value = S.win; $('sSmooth').value = S.smooth; $('sLog').value = S.logx ? '1' : '0';
   $('sBandLo').value = S.bandLo; $('sBandHi').value = S.bandHi;
@@ -1098,6 +1120,13 @@ $('btnSet').onclick = () => openSettings();
 new ResizeObserver(resize).observe(document.body);
 resize();
 requestAnimationFrame(loop);
+
+let devTimer;
+navigator.mediaDevices && navigator.mediaDevices.addEventListener && navigator.mediaDevices.addEventListener('devicechange', () => {
+  if (!running || rec || S.deviceId !== '') return;
+  clearTimeout(devTimer);
+  devTimer = setTimeout(() => startAudio().then(() => toast('入力デバイスが変わりました：' + (trackInfo.label || '既定'))).catch(showError), 800);
+});
 
 if ('serviceWorker' in navigator && location.protocol === 'https:') navigator.serviceWorker.register('sw.js').catch(() => {});
 </script>
