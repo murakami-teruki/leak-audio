@@ -3,76 +3,95 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>外部マイク入力テスト</title>
+<title>外部マイク入力テスト v2</title>
 <style>
   :root { --bg:#111; --fg:#eee; --sub:#9aa; --ok:#4c8; --ng:#e55; --acc:#3af; }
   body { margin:0; padding:16px; background:var(--bg); color:var(--fg); font-family:system-ui,sans-serif; font-size:15px; }
   h1 { font-size:18px; margin:0 0 12px; }
+  h2 { font-size:14px; color:var(--sub); margin:14px 0 4px; font-weight:normal; }
   button, select { font-size:16px; padding:10px 14px; margin:4px 0; width:100%; border-radius:8px; border:1px solid #444; background:#222; color:var(--fg); }
   button.primary { background:var(--acc); color:#000; border:none; font-weight:bold; }
+  .row { display:flex; gap:8px; } .row > * { flex:1; }
   table { width:100%; border-collapse:collapse; margin:8px 0; font-size:13px; }
   td { padding:4px 6px; border-bottom:1px solid #333; vertical-align:top; word-break:break-all; }
   td:first-child { color:var(--sub); width:42%; }
   .ok { color:var(--ok); } .ng { color:var(--ng); }
-  canvas { width:100%; height:180px; background:#000; display:block; margin-top:8px; border-radius:6px; }
-  #meter { height:14px; background:#222; border-radius:7px; overflow:hidden; margin-top:8px; }
-  #bar { height:100%; width:0; background:var(--ok); }
+  canvas { width:100%; display:block; background:#000; border-radius:6px; }
+  #spec { height:200px; } #hist { height:120px; }
+  #big { font-size:32px; font-weight:bold; text-align:center; margin:8px 0 0; font-variant-numeric:tabular-nums; }
+  #bands { font-size:13px; text-align:center; color:var(--sub); font-variant-numeric:tabular-nums; }
   #log { font-size:12px; color:var(--sub); white-space:pre-wrap; margin-top:8px; }
 </style>
 </head>
 <body>
-<h1>外部マイク入力テスト</h1>
+<h1>外部マイク入力テスト v2</h1>
 
-<table id="env"></table>
-
-<button class="primary" id="start">① マイク開始（許可ダイアログが出ます）</button>
+<button class="primary" id="start">① マイク開始</button>
 <select id="dev" disabled><option>（開始後にデバイス一覧を表示）</option></select>
-<button id="stop" disabled>停止</button>
+<div class="row">
+  <select id="mode">
+    <option value="raw">音声処理 すべてOFF</option>
+    <option value="default">ブラウザ標準（処理ON）</option>
+  </select>
+  <button id="stop" disabled>停止</button>
+</div>
 
-<div id="meter"><div id="bar"></div></div>
-<canvas id="cv"></canvas>
+<div id="big">-- dBFS</div>
+<div id="bands">低域 20-200Hz: -- / 中域 200-2kHz: -- / 高域 2k-8kHz: --</div>
+
+<h2>レベル履歴（直近10秒）— マイクのON/OFFや叩いたときの変化を見る</h2>
+<canvas id="hist"></canvas>
+
+<h2>スペクトル（対数軸 20Hz〜20kHz、-140〜0 dBFS）</h2>
+<canvas id="spec"></canvas>
+
 <table id="info"></table>
+<table id="env"></table>
 <div id="log"></div>
 
 <script>
 const $ = id => document.getElementById(id);
-const log = m => { $('log').textContent += m + '\n'; };
+const log = m => { $('log').textContent = new Date().toLocaleTimeString() + ' ' + m + '\n' + $('log').textContent; };
 const row = (t, k, v, cls='') => { t.insertAdjacentHTML('beforeend', `<tr><td>${k}</td><td class="${cls}">${v}</td></tr>`); };
 
-// 環境チェック
 const env = $('env');
 row(env, 'URLスキーム', location.protocol);
-row(env, 'セキュアコンテキスト', window.isSecureContext ? 'OK' : 'NG（マイク使用不可）', window.isSecureContext ? 'ok' : 'ng');
-row(env, 'getUserMedia', navigator.mediaDevices?.getUserMedia ? 'あり' : 'なし', navigator.mediaDevices?.getUserMedia ? 'ok' : 'ng');
+row(env, 'セキュアコンテキスト', window.isSecureContext ? 'OK' : 'NG', window.isSecureContext ? 'ok' : 'ng');
 row(env, 'UserAgent', navigator.userAgent);
 
-let ctx, stream, raf;
+let ctx, stream, raf, curDev = '';
+const hist = []; // [time, dB]
 
 async function open(deviceId) {
   stop();
-  const audio = {
-    echoCancellation: false, noiseSuppression: false, autoGainControl: false,
-    channelCount: 1
-  };
+  const raw = $('mode').value === 'raw';
+  const audio = raw
+    ? { echoCancellation:false, noiseSuppression:false, autoGainControl:false, channelCount:1 }
+    : {};
   if (deviceId) audio.deviceId = { exact: deviceId };
   stream = await navigator.mediaDevices.getUserMedia({ audio });
   ctx = new AudioContext();
   const src = ctx.createMediaStreamSource(stream);
   const an = ctx.createAnalyser();
-  an.fftSize = 4096; an.smoothingTimeConstant = 0.6;
+  an.fftSize = 8192; an.smoothingTimeConstant = 0.5;
+  an.minDecibels = -140; an.maxDecibels = 0;
   src.connect(an);
 
   const tr = stream.getAudioTracks()[0];
   const s = tr.getSettings();
+  curDev = s.deviceId;
   const info = $('info'); info.innerHTML = '';
   row(info, '使用中デバイス', tr.label || '(ラベルなし)');
   row(info, 'サンプリング周波数', ctx.sampleRate + ' Hz');
   for (const k of ['echoCancellation', 'noiseSuppression', 'autoGainControl']) {
     const v = s[k];
-    row(info, k, v === undefined ? '不明' : (v ? 'ON（要注意）' : 'OFF'), v ? 'ng' : 'ok');
+    row(info, k, v === undefined ? '不明' : (v ? 'ON' : 'OFF'), v ? 'ng' : 'ok');
   }
+  log(`開始: ${tr.label} / ${raw ? '処理OFF' : '標準'}`);
+  tr.onended = () => log('トラックが終了しました（デバイス切断？）');
+  tr.onmute = () => log('トラックがミュートされました');
 
-  await listDevices(s.deviceId);
+  await listDevices(curDev);
   $('stop').disabled = false;
   draw(an);
 }
@@ -87,34 +106,70 @@ async function listDevices(current) {
     sel.appendChild(o);
   });
   sel.disabled = false;
-  log(`音声入力デバイス数: ${devs.length}`);
+}
+
+function bandDb(freq, binHz, f1, f2) {
+  // 帯域内パワー合計（dBFS相当）
+  let p = 0;
+  for (let i = Math.max(1, Math.floor(f1 / binHz)); i <= Math.min(freq.length - 1, Math.ceil(f2 / binHz)); i++) p += Math.pow(10, freq[i] / 10);
+  return 10 * Math.log10(p + 1e-20);
 }
 
 function draw(an) {
-  const cv = $('cv'), g = cv.getContext('2d');
+  const sc = $('spec'), sg = sc.getContext('2d');
+  const hc = $('hist'), hg = hc.getContext('2d');
   const freq = new Float32Array(an.frequencyBinCount);
   const time = new Float32Array(an.fftSize);
-  const nyq = ctx.sampleRate / 2, fMax = 5000;
+  const nyq = ctx.sampleRate / 2, binHz = nyq / freq.length;
+  const fMin = 20, fMax = Math.min(20000, nyq);
+  const lx = f => Math.log(f / fMin) / Math.log(fMax / fMin);
+  const dpr = devicePixelRatio;
+  hist.length = 0;
+
   const loop = () => {
-    cv.width = cv.clientWidth * devicePixelRatio; cv.height = cv.clientHeight * devicePixelRatio;
+    for (const c of [sc, hc]) { c.width = c.clientWidth * dpr; c.height = c.clientHeight * dpr; }
     an.getFloatFrequencyData(freq);
     an.getFloatTimeDomainData(time);
-    // 入力レベル（RMS dBFS）
-    let sum = 0; for (const x of time) sum += x * x;
-    const db = 10 * Math.log10(sum / time.length + 1e-12);
-    $('bar').style.width = Math.max(0, Math.min(100, (db + 90) / 90 * 100)) + '%';
-    // スペクトル 0〜5kHz（-120〜0 dBFS）
-    g.fillStyle = '#000'; g.fillRect(0, 0, cv.width, cv.height);
-    g.strokeStyle = '#3af'; g.lineWidth = 1.5 * devicePixelRatio; g.beginPath();
-    const n = Math.floor(freq.length * fMax / nyq);
-    for (let i = 0; i < n; i++) {
-      const x = i / n * cv.width, y = (-freq[i] / 120) * cv.height;
-      i ? g.lineTo(x, y) : g.moveTo(x, y);
+
+    let sum = 0, pk = 0;
+    for (const x of time) { sum += x * x; pk = Math.max(pk, Math.abs(x)); }
+    const db = 10 * Math.log10(sum / time.length + 1e-20);
+    const pkDb = 20 * Math.log10(pk + 1e-10);
+    $('big').textContent = `${db.toFixed(1)} dBFS（ピーク ${pkDb.toFixed(1)}）`;
+    $('big').style.color = pkDb > -1 ? 'var(--ng)' : 'var(--fg)';
+    $('bands').textContent =
+      `低域 20-200Hz: ${bandDb(freq, binHz, 20, 200).toFixed(1)} / 中域 200-2kHz: ${bandDb(freq, binHz, 200, 2000).toFixed(1)} / 高域 2k-8kHz: ${bandDb(freq, binHz, 2000, 8000).toFixed(1)}`;
+
+    // レベル履歴
+    const now = performance.now();
+    hist.push([now, db]);
+    while (hist.length && now - hist[0][0] > 10000) hist.shift();
+    const W = hc.width, H = hc.height, dMin = -120, dMax = 0;
+    hg.fillStyle = '#000'; hg.fillRect(0, 0, W, H);
+    hg.strokeStyle = '#333'; hg.fillStyle = '#9aa'; hg.font = `${10 * dpr}px sans-serif`;
+    for (let d = -100; d < 0; d += 20) { const y = (d - dMax) / (dMin - dMax) * H; hg.beginPath(); hg.moveTo(0, y); hg.lineTo(W, y); hg.stroke(); hg.fillText(d, 2, y - 2); }
+    hg.strokeStyle = '#4c8'; hg.lineWidth = 1.5 * dpr; hg.beginPath();
+    hist.forEach(([t, d], i) => { const x = W - (now - t) / 10000 * W, y = (d - dMax) / (dMin - dMax) * H; i ? hg.lineTo(x, y) : hg.moveTo(x, y); });
+    hg.stroke();
+
+    // スペクトル（対数軸）
+    const SW = sc.width, SH = sc.height;
+    sg.fillStyle = '#000'; sg.fillRect(0, 0, SW, SH);
+    sg.strokeStyle = '#333'; sg.fillStyle = '#9aa'; sg.font = `${10 * dpr}px sans-serif`;
+    for (const f of [50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]) {
+      if (f > fMax) continue;
+      const x = lx(f) * SW; sg.beginPath(); sg.moveTo(x, 0); sg.lineTo(x, SH); sg.stroke();
+      sg.fillText(f >= 1000 ? f / 1000 + 'k' : f, x + 2, SH - 4);
     }
-    g.stroke();
-    g.fillStyle = '#9aa'; g.font = `${11 * devicePixelRatio}px sans-serif`;
-    for (let f = 1000; f < fMax; f += 1000) g.fillText(f / 1000 + 'k', f / fMax * cv.width, cv.height - 4);
-    g.fillText(`${db.toFixed(1)} dBFS`, 4, 14 * devicePixelRatio);
+    sg.strokeStyle = '#3af'; sg.beginPath();
+    let first = true;
+    for (let i = 1; i < freq.length; i++) {
+      const f = i * binHz; if (f < fMin || f > fMax) continue;
+      const x = lx(f) * SW, y = (-freq[i] / 140) * SH;
+      first ? sg.moveTo(x, y) : sg.lineTo(x, y); first = false;
+    }
+    sg.stroke();
+
     raf = requestAnimationFrame(loop);
   };
   loop();
@@ -127,10 +182,15 @@ function stop() {
   $('stop').disabled = true;
 }
 
-$('start').onclick = () => open().catch(e => log('エラー: ' + e.name + ' / ' + e.message));
-$('dev').onchange = e => open(e.target.value).catch(err => log('エラー: ' + err.message));
+const err = e => log('エラー: ' + e.name + ' / ' + e.message);
+$('start').onclick = () => open($('dev').disabled ? undefined : $('dev').value).catch(err);
+$('dev').onchange = e => open(e.target.value).catch(err);
+$('mode').onchange = () => { if (ctx) open(curDev).catch(err); };
 $('stop').onclick = stop;
-navigator.mediaDevices?.addEventListener?.('devicechange', () => log('デバイス接続状態が変化しました'));
+navigator.mediaDevices?.addEventListener?.('devicechange', async () => {
+  log('デバイス接続状態が変化しました');
+  if (!$('dev').disabled) await listDevices(curDev);
+});
 </script>
 </body>
 </html>
