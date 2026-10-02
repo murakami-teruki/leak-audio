@@ -14,7 +14,9 @@
   }
   * { box-sizing:border-box; }
   html, body { margin:0; height:100%; background:var(--bg); color:var(--fg);
-    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; font-size:14px; overscroll-behavior:none; }
+    font-family:system-ui,-apple-system,"Hiragino Sans","Noto Sans JP",sans-serif; font-size:14px; overscroll-behavior:none;
+    -webkit-user-select:none; user-select:none; -webkit-touch-callout:none; }
+  dialog input, dialog textarea { -webkit-user-select:text; user-select:text; }
   body { display:flex; flex-direction:column; height:100dvh; padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom); }
 
   header { display:flex; gap:4px; padding:6px; background:var(--panel); border-bottom:1px solid var(--line); }
@@ -71,6 +73,9 @@
   dialog legend { color:var(--acc); font-size:12px; padding:0 4px; }
   #saveSummary { font-size:12px; color:var(--sub); line-height:1.6; font-variant-numeric:tabular-nums; }
   a { color:var(--acc); }
+  #toast { position:absolute; left:50%; top:40%; transform:translateX(-50%); background:rgba(0,0,0,.85); color:#fff;
+    padding:8px 14px; border-radius:8px; display:none; pointer-events:none; font-size:13px; }
+  #btnAuto { width:100%; margin-top:8px; font-size:15px; padding:8px; border-radius:8px; border:1px solid #444; background:#262626; color:var(--fg); }
 </style>
 </head>
 <body>
@@ -95,7 +100,8 @@
 </section>
 <section class="pane" id="bottom">
   <canvas id="cvWf"></canvas>
-  <div class="tag">スペクトログラム（上が最新）</div>
+  <div class="tag">スペクトログラム（上が最新・ダブルタップで色レンジ自動）</div>
+  <div id="toast"></div>
 </section>
 
 <footer>
@@ -166,6 +172,10 @@
       <div><label>下画面 色 下限 dB</label><input type="number" id="sCMin"></div>
       <div><label>下画面 色 上限 dB</label><input type="number" id="sCMax"></div>
     </div>
+    <button id="btnAuto" type="button">現在の信号に合わせて自動調整</button>
+    <div class="chk"><label><input type="checkbox" id="sWfDiff">下画面を「背景との差」で表示</label></div>
+    <div class="grid2"><div><label>差表示の上限 dB</label><input type="number" id="sDiffMax"></div></div>
+    <div class="note">背景を登録すると、背景より大きい成分だけが色付きで表示されます（背景以下は黒）。保存するCSV・WAVは元のままです。</div>
   </fieldset>
   <fieldset><legend>録音・保存</legend>
     <div class="grid2">
@@ -178,20 +188,20 @@
     <button id="btnSetCancel">キャンセル</button>
     <button id="btnSetOk" class="primary">適用</button>
   </div>
-  <div class="note"><a href="test.html">入力テストページ</a> ／ v1.0</div>
+  <div class="note"><a href="test.html">入力テストページ</a> ／ v1.2</div>
 </dialog>
 
 <script>
 'use strict';
-const APP_VER = '1.0';
+const APP_VER = '1.2';
 const $ = id => document.getElementById(id);
 
 // ---------------- 設定 ----------------
 const DEFAULTS = {
   deviceId:'', ec:true, ns:false, agc:false,
   fft:8192, win:'hann', smooth:0.6, logx:true, bandLo:100, bandHi:2000,
-  fMin:20, fMax:5000, dbMin:-140, dbMax:-20, cMin:-120, cMax:-50,
-  recSec:5, csvMax:8000, gps:false, siteId:''
+  fMin:20, fMax:5000, dbMin:-120, dbMax:0, cMin:-100, cMax:-30,
+  recSec:5, csvMax:8000, gps:false, siteId:'', wfDiff:false, diffMax:30
 };
 let S = { ...DEFAULTS };
 try { Object.assign(S, JSON.parse(localStorage.getItem('leakAudioSettings') || '{}')); } catch (e) {}
@@ -506,12 +516,15 @@ function pushWaterfallRows() {
   const rows = pendingRows.splice(0, pendingRows.length).slice(-n);
   const shift = rowPx * rows.length;
   gBuf.drawImage(wfBuf, 0, 0, W, H - shift, 0, shift, W, H - shift);
-  const img = gBuf.createImageData(W, shift), px = img.data, span = S.cMax - S.cMin;
+  const diff = S.wfDiff && bgDb;
+  const lo = diff ? 0 : S.cMin, span = diff ? S.diffMax : S.cMax - S.cMin;
+  const img = gBuf.createImageData(W, shift), px = img.data;
   rows.forEach((db, r) => {
     const yTop = (rows.length - 1 - r) * rowPx; // 最新を一番上に
     for (let x = 0; x < W; x++) {
-      let m = -Infinity; for (let k = mapB0[x]; k <= mapB1[x]; k++) if (db[k] > m) m = db[k];
-      const ci = Math.max(0, Math.min(255, Math.round((m - S.cMin) / span * 255))) * 3;
+      let m = -Infinity;
+      for (let k = mapB0[x]; k <= mapB1[x]; k++) { const v = diff ? db[k] - bgDb[k] : db[k]; if (v > m) m = v; }
+      const ci = Math.max(0, Math.min(255, Math.round((m - lo) / span * 255))) * 3;
       for (let yy = 0; yy < rowPx; yy++) {
         const o = ((yTop + yy) * W + x) * 4;
         px[o] = LUT[ci]; px[o + 1] = LUT[ci + 1]; px[o + 2] = LUT[ci + 2]; px[o + 3] = 255;
@@ -538,7 +551,8 @@ function drawWaterfall() {
   const cbH = Math.min(H * 0.5, 120 * dpr), cbX = W - 10 * dpr, cbY = H - cbH - 18 * dpr;
   for (let i = 0; i < cbH; i++) { const ci = Math.round((1 - i / cbH) * 255) * 3; g.fillStyle = `rgb(${LUT[ci]},${LUT[ci + 1]},${LUT[ci + 2]})`; g.fillRect(cbX, cbY + i, 6 * dpr, 1); }
   g.fillStyle = '#ccc'; g.textAlign = 'right';
-  g.fillText(S.cMax, cbX - 2 * dpr, cbY + 8 * dpr); g.fillText(S.cMin, cbX - 2 * dpr, cbY + cbH);
+  const dm = S.wfDiff && bgDb;
+  g.fillText(dm ? '+' + S.diffMax : S.cMax, cbX - 2 * dpr, cbY + 8 * dpr); g.fillText(dm ? '背景' : S.cMin, cbX - 2 * dpr, cbY + cbH);
   g.textAlign = 'left';
   if (cursorX !== null) { g.strokeStyle = 'rgba(255,255,255,.7)'; g.setLineDash([4 * dpr, 4 * dpr]); g.beginPath(); g.moveTo(cursorX * dpr, 0); g.lineTo(cursorX * dpr, H); g.stroke(); g.setLineDash([]); }
 }
@@ -569,7 +583,25 @@ for (const c of [cvSpec, cvWf]) {
   const set = e => { const r = c.getBoundingClientRect(); cursorX = e.clientX - r.left; if (hold) drawSpectrum(); };
   c.addEventListener('pointerdown', e => { set(e); c.setPointerCapture(e.pointerId); });
   c.addEventListener('pointermove', e => { if (e.buttons) set(e); });
-  c.addEventListener('dblclick', () => { cursorX = null; drawSpectrum(); });
+  c.addEventListener('contextmenu', e => e.preventDefault());
+}
+cvSpec.addEventListener('dblclick', () => { cursorX = null; drawSpectrum(); });
+cvWf.addEventListener('dblclick', () => { cursorX = null; autoRange(); });
+
+// 表示レンジ自動調整（現在の平均スペクトルの最大値に合わせる）
+function autoRange() {
+  if (!avgN || !mapB0) return;
+  let mx = -Infinity;
+  for (let x = 0; x < mapB0.length; x++) { for (let k = mapB0[x]; k <= mapB1[x]; k++) { const d = toDb(avgSum[k] / avgN); if (d > mx) mx = d; } }
+  if (!isFinite(mx)) return;
+  S.cMax = Math.ceil(mx / 5) * 5; S.cMin = S.cMax - 60;
+  S.dbMax = Math.min(10, Math.ceil((mx + 10) / 10) * 10); S.dbMin = S.dbMax - 120;
+  saveS(); toast(`表示レンジ：色 ${S.cMin}〜${S.cMax} dB`);
+}
+let toastTimer;
+function toast(msg) {
+  const t = $('toast'); t.textContent = msg; t.style.display = 'block';
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => t.style.display = 'none', 2000);
 }
 
 // ---------------- 録音・保存 ----------------
@@ -735,6 +767,7 @@ async function openSettings() {
   $('sBandLo').value = S.bandLo; $('sBandHi').value = S.bandHi;
   $('sFMin').value = S.fMin; $('sFMax').value = S.fMax; $('sDbMin').value = S.dbMin; $('sDbMax').value = S.dbMax;
   $('sCMin').value = S.cMin; $('sCMax').value = S.cMax; $('sRecSec').value = S.recSec; $('sCsvMax').value = S.csvMax; $('sGps').checked = S.gps;
+  $('sWfDiff').checked = S.wfDiff; $('sDiffMax').value = S.diffMax;
   showRes(); $('dlgSet').showModal();
 }
 function showRes() {
@@ -742,6 +775,7 @@ function showRes() {
   $('sRes').textContent = `周波数分解能 ${(sr / n).toFixed(2)} Hz ／ 1フレームの長さ ${(n / sr * 1000).toFixed(0)} ms`;
 }
 $('sFft').onchange = showRes;
+$('btnAuto').onclick = () => { autoRange(); $('sDbMin').value = S.dbMin; $('sDbMax').value = S.dbMax; $('sCMin').value = S.cMin; $('sCMax').value = S.cMax; };
 $('btnSetCancel').onclick = () => $('dlgSet').close();
 $('btnSetOk').onclick = async () => {
   const num = (id, lo, hi) => Math.max(lo, Math.min(hi, +$(id).value || 0));
@@ -753,10 +787,11 @@ $('btnSetOk').onclick = async () => {
   S.dbMin = num('sDbMin', -200, 0); S.dbMax = Math.max(S.dbMin + 10, num('sDbMax', -190, 20));
   S.cMin = num('sCMin', -200, 0); S.cMax = Math.max(S.cMin + 5, num('sCMax', -195, 20));
   S.recSec = num('sRecSec', 1, 60); S.csvMax = num('sCsvMax', 100, 24000); S.gps = $('sGps').checked;
+  S.wfDiff = $('sWfDiff').checked; S.diffMax = num('sDiffMax', 5, 80);
   saveS(); $('dlgSet').close();
   const audioChanged = ['deviceId', 'ec', 'ns', 'agc'].some(k => old[k] !== S[k]);
   const anaChanged = ['fft', 'win'].some(k => old[k] !== S[k]);
-  const axisChanged = ['logx', 'fMin', 'fMax'].some(k => old[k] !== S[k]);
+  const axisChanged = ['logx', 'fMin', 'fMax', 'wfDiff', 'diffMax'].some(k => old[k] !== S[k]);
   try {
     if (audioChanged) await startAudio();
     else if (anaChanged && ctx) initAnalysis();

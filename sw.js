@@ -1,5 +1,5 @@
 // オフライン用キャッシュ。オンライン時は常に最新を取得し、失敗時のみキャッシュを使う（ネットワーク優先）
-const CACHE = 'leak-audio-v1';
+const CACHE = 'leak-audio-v1.2';
 const FILES = ['./', 'index.html', 'test.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {
