@@ -1,10 +1,15 @@
 // オフライン用キャッシュ。オンライン時は常に最新を取得し、失敗時のみキャッシュを使う（ネットワーク優先）
-const CACHE = 'leak-audio-v1.4b';
-const FILES = ['./', 'index.html', 'test.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png'];
+const CACHE = 'leak-audio-v2.3';
+const FILES = ['./', 'index.html', 'test.html', 'manifest.webmanifest', 'icon-192.png', 'icon-512.png',
+  'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css',
+  'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js'];
 const isCacheable = u => { const x = new URL(u); return x.origin === location.origin || x.host === 'cdnjs.cloudflare.com'; };
 
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // 1つ取れなくても他はキャッシュする
+  e.waitUntil(caches.open(CACHE)
+    .then(c => Promise.all(FILES.map(f => c.add(f).catch(() => {}))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', e => {
